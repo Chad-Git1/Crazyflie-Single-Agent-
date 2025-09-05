@@ -10,7 +10,7 @@ Here are the steps we will be undertaking:
 
 3 - Train the flight control algorithms
     - On Policy : PPO
-    - Off Policy : 
+    - Off Policy : SAC
     
 4 - Collect statistics
 
