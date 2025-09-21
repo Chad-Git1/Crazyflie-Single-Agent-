@@ -1,0 +1,128 @@
+<mujoco model="cf2">
+  <compiler inertiafromgeom="false" meshdir="assets" autolimits="true"/>
+
+  <default>
+    <default class="cf2_drone_2">
+      <default class="visual_drone_2">
+        <geom group="2" type="mesh" contype="0" conaffinity="0"/>
+      </default>
+      <default class="collision_drone_2">
+        <geom group="3" type="mesh"/>
+      </default>
+      <site group="5"/>
+    </default>
+  </default>
+
+  <asset>
+    <material name="polished_plastic_drone_2" rgba="0.631 0.659 0.678 1"/>
+    <material name="polished_gold_drone_2" rgba="0.969 0.878 0.6 1"/>
+    <material name="medium_gloss_plastic_drone_2" rgba="0.109 0.184 0.0 1"/>
+    <material name="propeller_plastic_drone_2" rgba="0.792 0.820 0.933 1"/>
+    <material name="white_drone_2" rgba="1 1 1 1"/>
+    <material name="body_frame_plastic_drone_2" rgba="0.102 0.102 0.102 1"/>
+    <material name="burnished_chrome_drone_2" rgba="0.898 0.898 0.898 1"/>
+
+    <mesh name="cf2_0_drone_2" file="cf2_0.obj"/>
+    <mesh name="cf2_1_drone_2" file="cf2_1.obj"/>
+    <mesh name="cf2_2_drone_2" file="cf2_2.obj"/>
+    <mesh name="cf2_3_drone_2" file="cf2_3.obj"/>
+    <mesh name="cf2_4_drone_2" file="cf2_4.obj"/>
+    <mesh name="cf2_5_drone_2" file="cf2_5.obj"/>
+    <mesh name="cf2_6_drone_2" file="cf2_6.obj"/>
+    <mesh name="cf2_collision_0_drone_2" file="cf2_collision_0.obj"/>
+    <mesh name="cf2_collision_1_drone_2" file="cf2_collision_1.obj"/>
+    <mesh name="cf2_collision_2_drone_2" file="cf2_collision_2.obj"/>
+    <mesh name="cf2_collision_3_drone_2" file="cf2_collision_3.obj"/>
+    <mesh name="cf2_collision_4_drone_2" file="cf2_collision_4.obj"/>
+    <mesh name="cf2_collision_5_drone_2" file="cf2_collision_5.obj"/>
+    <mesh name="cf2_collision_6_drone_2" file="cf2_collision_6.obj"/>
+    <mesh name="cf2_collision_7_drone_2" file="cf2_collision_7.obj"/>
+    <mesh name="cf2_collision_8_drone_2" file="cf2_collision_8.obj"/>
+    <mesh name="cf2_collision_9_drone_2" file="cf2_collision_9.obj"/>
+    <mesh name="cf2_collision_10_drone_2" file="cf2_collision_10.obj"/>
+    <mesh name="cf2_collision_11_drone_2" file="cf2_collision_11.obj"/>
+    <mesh name="cf2_collision_12_drone_2" file="cf2_collision_12.obj"/>
+    <mesh name="cf2_collision_13_drone_2" file="cf2_collision_13.obj"/>
+    <mesh name="cf2_collision_14_drone_2" file="cf2_collision_14.obj"/>
+    <mesh name="cf2_collision_15_drone_2" file="cf2_collision_15.obj"/>
+    <mesh name="cf2_collision_16_drone_2" file="cf2_collision_16.obj"/>
+    <mesh name="cf2_collision_17_drone_2" file="cf2_collision_17.obj"/>
+    <mesh name="cf2_collision_18_drone_2" file="cf2_collision_18.obj"/>
+    <mesh name="cf2_collision_19_drone_2" file="cf2_collision_19.obj"/>
+    <mesh name="cf2_collision_20_drone_2" file="cf2_collision_20.obj"/>
+    <mesh name="cf2_collision_21_drone_2" file="cf2_collision_21.obj"/>
+    <mesh name="cf2_collision_22_drone_2" file="cf2_collision_22.obj"/>
+    <mesh name="cf2_collision_23_drone_2" file="cf2_collision_23.obj"/>
+    <mesh name="cf2_collision_24_drone_2" file="cf2_collision_24.obj"/>
+    <mesh name="cf2_collision_25_drone_2" file="cf2_collision_25.obj"/>
+    <mesh name="cf2_collision_26_drone_2" file="cf2_collision_26.obj"/>
+    <mesh name="cf2_collision_27_drone_2" file="cf2_collision_27.obj"/>
+    <mesh name="cf2_collision_28_drone_2" file="cf2_collision_28.obj"/>
+    <mesh name="cf2_collision_29_drone_2" file="cf2_collision_29.obj"/>
+    <mesh name="cf2_collision_30_drone_2" file="cf2_collision_30.obj"/>
+    <mesh name="cf2_collision_31_drone_2" file="cf2_collision_31.obj"/>
+  </asset>
+
+  <worldbody>
+    <!-- Slide x offset to allow space for other drone -->
+    <body name="cf2_drone_2" pos="0.1 0 0.1" childclass="cf2_drone_2">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.027" diaginertia="2.3951e-5 2.3951e-5 3.2347e-5"/>
+      <!-- Drone 2: blue propellors -->
+      <geom mesh="cf2_0_drone_2" rgba="0.1 0.1 0.6 1" class="visual"/>
+      <geom mesh="cf2_1_drone_2" material="medium_gloss_plastic" class="visual"/>
+      <geom mesh="cf2_2_drone_2" material="polished_gold" class="visual"/>
+      <geom mesh="cf2_3_drone_2" material="polished_plastic" class="visual"/>
+      <geom mesh="cf2_4_drone_2" material="burnished_chrome" class="visual"/>
+      <geom mesh="cf2_5_drone_2" material="body_frame_plastic" class="visual"/>
+      <geom mesh="cf2_6_drone_2" material="white" class="visual"/>
+      <geom mesh="cf2_collision_0_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_1_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_2_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_3_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_4_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_5_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_6_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_7_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_8_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_9_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_10_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_11_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_12_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_13_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_14_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_15_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_16_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_17_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_18_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_19_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_20_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_21_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_22_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_23_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_24_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_25_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_26_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_27_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_28_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_29_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_30_drone_2" class="collision"/>
+      <geom mesh="cf2_collision_31_drone_2" class="collision"/>
+      <site name="imu_drone_2"/>
+      <site name="actuation_drone_2"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor class="cf2_drone_2" ctrlrange="0 0.35" gear="0 0 1 0 0 0" site="actuation_drone_2" name="body_thrust_drone_2"/>
+    <motor class="cf2_drone_2" ctrlrange="-1 1" gear="0 0 0 -0.00001 0 0" site="actuation_drone_2" name="x_moment_drone_2"/>
+    <motor class="cf2_drone_2" ctrlrange="-1 1" gear="0 0 0 0 -0.00001 0" site="actuation_drone_2" name="y_moment_drone_2"/>
+    <motor class="cf2_drone_2" ctrlrange="-1 1" gear="0 0 0 0 0 -0.00001" site="actuation_drone_2" name="z_moment_drone_2"/>
+  </actuator>
+
+  <sensor>
+    <gyro name="body_gyro_drone_2" site="imu_drone_2"/>
+    <accelerometer name="body_linacc_drone_2" site="imu"/>
+    <framequat name="body_quat_drone_2" objtype="site" objname="imu"/>
+  </sensor>
+</mujoco>
