@@ -86,6 +86,7 @@ class CrazieFlieEnv(gym.Env):
         ##pos (x,y,z) then quat pos(w,x,y,z) then lin velocity(vx,vy,vz) then angular velocity (wx,wy,wz)
         observation = np.concatenate([pos,quat_pos,linear_velocity,angular_velocity])
         return observation.astype(np.float32)
+    
    
 
 
