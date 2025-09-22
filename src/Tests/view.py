@@ -14,9 +14,13 @@ def main():
     model = mujoco.MjModel.from_xml_path(path)
     data = mujoco.MjData(model)
 
+    print(data.qpos[0:])
+
     # Launch viewer
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
+            data.qpos[0:3] = [0,0,0.5]
+
             mujoco.mj_step(model, data)
             viewer.sync()
 

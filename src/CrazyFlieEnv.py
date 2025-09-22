@@ -1,159 +1,95 @@
 import gymnasium as gym
-from gymnasium import spaces
 import numpy as np
-import mujoco
+from gymnasium import spaces
+import mujoco as mj
 
+##creates an environment inhereting from gymnasium's gym.Env class
+class CrazieFlieEnv(gym.Env):
 
-class CrazyflieEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 60}
+    def __init__(self, xmlPath="Assets/scene.xml"):##initialization takes in a xml path for the crazy flies model and then binds it to a model pa
+        #parameter and also a data parameter
+        super().__init__
+        self.model = mj.MjModel.from_xml_path(xmlPath)
+        self.data = mj.MjData(self.model)
 
-    def __init__(self, xml_path, num_drones=1, target_height=0.5):
-        """
-        Initialize the training environment
+        ##defining the action space as the 4 actuators of the drone thrust, yaw(z-axis rotate in place), pitch(y-axis forward/back), roll(x-axis left/right)
+        ##low and high values taken from the cf2.xml actuator ctrl ranges
+        ##here we specify the action space using spaces.Box to illustrate a continous range with a range of
+        #low values representing each actuator [0,-1,-1,-1] = [thrust,roll,pitch,yaw]
+        ##high values are for each actuator too [0.35,1,1,1] = [thrust,roll,pitch,yaw]
+        self.action_space = spaces.Box(low=np.array([0,-1,-1,-1],dtype=np.float32),high=np.array([0.35,1,1,1], dtype =np.float32),dtype=np.float32)
+        
+        #here we create the observaiton space which is the locaitonal and speed values of which there are 13
+        #these valeus have no limits and can range from -infinity to infinity so we have to have an array 
+        #representing all 13 of these elements as a way to represent the state where each value has a range from (inf,-inf)
+        obs = np.inf*np.ones(13,dtype=np.float32)
+        self.observation_space = spaces.Box(low=-obs ,high=obs,dtype=np.float32)
+        self.state = np.array([0,0,0,0.01])
+           
+    def reset(self,seed = None, options = None):
 
-        Parameters
-        ----------
-        xml_path : string 
-            Path to xml MuJoCo scene
-        num_drones : int
-            Number of drones in the MuJoCo scene
-        target_height : float
-            For now we are doing a basic hover test, this is the target hover height
-        """
-        super().__init__()
+        super().reset(seed)
 
-        # Store config
-        self.num_drones = num_drones
-        self.target_height = target_height
+        ##reset model data, then reset the control data so that there is no thrust, or any rotaitonal movement
+        mj.mj_resetData(self.model, self.data)
 
-        # MuJoCo model
-        self.model = mujoco.MjModel.from_xml_path(xml_path)
-        self.data = mujoco.MjData(self.model)
+        self.data.ctrl[:] = 0
+        self.data.qpos[0:]=np.array([0,0,0.1,1,0,0,0],dtype=np.float32)
+    
 
-        # Drone obervation space
-        # [pos(3) + quaternion(4) + velocity(3) + angular_velocity(3)] = 13 per drone
-        obs_high = np.inf * np.ones(13 * self.num_drones, dtype=np.float32)
-        self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
+        self.data.qvel[0:]=0
 
-        # Drone action space (see aicraft axes: https://en.wikipedia.org/wiki/Aircraft_principal_axes)
-        # thrust + roll + pitch + yaw = 4 per drone
-        act_high = np.tile([0.1, 1, 1, 1], self.num_drones).astype(np.float32)
-        act_low = np.tile([-0.1, -1, -1, -1], self.num_drones).astype(np.float32)
-        self.action_space = spaces.Box(act_low, act_high, dtype=np.float32)
+        self.target_height = 0.5
 
-        # Viewer
-        self.viewer = None
+        current_obs = self._get_obs()
+        current_info = {}
 
-        # 7 qpos, 6 qvel, and 4 action controls per drone
-        self.qpos_per_drone = 7
-        self.qvel_per_drone = 6
-        self.ctrl_per_drone = 4
+        return current_obs, current_info
+        
+    def step(self,action):## the agent applies actions to the environemnt through this method
+       
+       ##clip the action then apply the action, check the current status of the environment, then determine reward based on that
+       action= np.clip(action,self.action_space.low,self.action_space.high)
 
+       self.data.ctrl[:] = action
 
-    def reset(self):
-        """
-        Reset the training environment
-        """
-        super().reset()
+       mj.mj_step(self.model,self.data)
 
-        mujoco.mj_resetData(self.model, self.data)
+       current_observation = self._get_obs()
 
-        # Initialize drones at slightly different z heights with velocities of 0
-        for i in range(self.num_drones):
-            base_qpos = i * self.qpos_per_drone
-            self.data.qpos[base_qpos + 2] = 0.1 + 0.01 * np.random.rand()
+       distance = self.target_height-current_observation[2]
+       reward = -abs(distance)
+       done=False
+       truncated=False
+       ##when drone crashes
+       if(current_observation[2] < 0.01 ):
+           done=True
+           reward =-100
 
-            base_qvel = i * self.qvel_per_drone
-            self.data.qvel[base_qvel: base_qvel + self.qvel_per_drone] = 0.0
+        ##when drone achieves hover distance
+       elif(distance==0):
+           done=True
+       return current_observation,reward,done,truncated,{}
+       
 
-        return self._get_obs(), {}
-
-
-    def step(self, action):
-        """
-        Take a step (action) and track the observation
-        """
-
-        # Clip action within action space
-        action = np.clip(action, self.action_space.low, self.action_space.high)
-
-        BASE_THRUST = 0.26487
-        kp = 0.3
-        kd = 0.1
-
-        total_reward = 0.0
-        done = False
-
-        # Fill control array
-        ctrl = np.zeros(self.num_drones * self.ctrl_per_drone, dtype=np.float32)
-
-        for i in range(self.num_drones):
-            base_qpos = i * self.qpos_per_drone
-            base_qvel = i * self.qvel_per_drone
-            base_ctrl = i * self.ctrl_per_drone
-
-            z_position = self.data.qpos[base_qpos + 2]
-            z_velocity = self.data.qvel[base_qvel + 2]
-
-            p_error = self.target_height - z_position
-            d_error = -z_velocity
-
-            # Combine RL action (only thrust offset part, no oritentation for now) with PD hover control
-            thrust = BASE_THRUST + kp * p_error + kd * d_error + action[base_ctrl]
-            ctrl[base_ctrl: base_ctrl + 4] = np.array([thrust, 0.0, 0.0, 0.0])
-
-            # Reward is per drone
-            total_reward += -abs(self.target_height - z_position)
-
-            # Terminate if any drone crashes or reaches target
-            done = (z_position < 0.0) or (abs(z_position - self.target_height) < 0.01)
-
-
-        self.data.ctrl[:] = ctrl
-
-        # Take a step and track observation
-        mujoco.mj_step(self.model, self.data)
-        obs = self._get_obs()
-
-        return obs, total_reward, done, False, {}
 
 
     def _get_obs(self):
-        """
-        Retrieve an observation of the current drone state
-        """
-        obs = []
-        for i in range(self.num_drones):
-            base_qpos = i * self.qpos_per_drone
-            base_qvel = i * self.qvel_per_drone
-
-            # Observation
-            # qpos stores (position[x, y, z], orientation[qz, qy, qz, q2])
-            # qvel stores (velocity[vx, vy, vz], angular velocity[wx, wy, wz])
-
-            pos = self.data.qpos[base_qpos: base_qpos + 3]
-            quat = self.data.qpos[base_qpos + 3: base_qpos + 7]
-            vel = self.data.qvel[base_qvel: base_qvel + 3]
-            ang_vel = self.data.qvel[base_qvel + 3: base_qvel + 6]
-
-            obs.extend(np.concatenate([pos, quat, vel, ang_vel]))
-
-        return np.array(obs, dtype=np.float32)
+        ##here our observation for the environment consist of position(x,y,z), quaternion position(w,x,y,z),
+        ##linear velocity (vx,vy,vz), angular velocity (wx,wy,wz)
+        ##linear velocity is the velocity in a particular direction and angular velocity is rotational speed along an axis
+        pos = self.data.qpos[0:3]
+        quat_pos = self.data.qpos[3:7]
+        linear_velocity= self.data.qvel[0:3]
+        angular_velocity=self.data.qvel[3:6]
+        ##pos (x,y,z) then quat pos(w,x,y,z) then lin velocity(vx,vy,vz) then angular velocity (wx,wy,wz)
+        observation = np.concatenate([pos,quat_pos,linear_velocity,angular_velocity])
+        return observation.astype(np.float32)
+   
 
 
-    def render(self):
-        """
-        Render the model in MuJoCo
-        """
-        if self.viewer is None:
-            self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
-        self.viewer.sync()
 
+if __name__ == "__main__":
+    env = CrazieFlieEnv("Assets/bitcraze_crazyflie_2/scene.xml")
 
-    def close(self):
-        """
-        Close the MuJoCo viewer
-        """
-        if self.viewer is not None:
-            self.viewer.close()
-            self.viewer = None
