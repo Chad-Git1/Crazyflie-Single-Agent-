@@ -7,8 +7,7 @@ from stable_baselines3.common.callbacks import EvalCallback
 import gymnasium as gym
 import CrazyFlieEnv
 import os
-
-
+from stable_baselines3.common.vec_env import SubprocVecEnv
 
 
 ##function ot create CrazyFlieEnv
@@ -59,6 +58,9 @@ model = PPO(
     tensorboard_log=log_dir
 )
 
+''' 
+Old SAC implementation, kept for reference
+
 model2 = SAC(
     "MlpPolicy",
     venv,
@@ -70,6 +72,25 @@ model2 = SAC(
     policy_kwargs=policy_kwargs_sac,
     verbose=1,
     tensorboard_log=log_dir
+)
+'''
+
+# New SAC implementation with adjusted hyperparameters
+
+model2 = SAC(
+    "MlpPolicy",
+    venv,
+    learning_rate=3e-4,  # Increased learning rate for potentially faster convergence
+    learning_starts=10000,  # More initial random steps for better exploration
+    batch_size=256,
+    gamma=0.98,  # Slightly lower discount factor to prioritize recent rewards
+    tau=0.05,  # Increased tau for more stable target updates
+    ent_coef="auto",    
+    policy_kwargs=policy_kwargs_sac,
+    verbose=1,
+    tensorboard_log=log_dir,
+    target_entropy = -float(venv.action_space.shape[0]) # Negative target entropy encourages sufficient exploration without excessive randomness
+
 )
 
 total_time: int = 10
@@ -131,18 +152,20 @@ for i in range(1, total_time):
         print(f"No improvement in mean reward for {early_stop_patience} iterations. Stopping early.")
         break
 
+
 ##to run model type python src/Train.py
 ##too see tensorboard graphs run tensorboard logdir='The File path of the logs folder'
 
 
-
-
-
+## Save the VecNormalize statistics for evaluation or deployment
+# vecnorm_dir = "logs/VectorNormalization"
+# os.makedirs(vecnorm_dir, exist_ok=True)  # Create directory if missing
+# venv.save(os.path.join(vecnorm_dir, "normalization.pkl"))
 
 
 ##evalaution function portion now
 # eval_env = DummyVecEnv([lambda: Monitor(make_env(target=0.5,xmlpath=xml_path))])
-# eval_env = VecNormalize.load("vecnormalize.pkl", eval_env)
+# eval_env = VecNormalize.load("logs/vecnormalize.pkl", eval_env)
 # eval_env.training = False
 # eval_env.norm_reward = False
 
