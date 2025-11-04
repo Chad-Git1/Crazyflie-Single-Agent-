@@ -5,13 +5,12 @@ import mujoco as mj
 
 import os
 
-##creates an environment inhereting from gymnasium's gym.Env class
-class CrazieFlieEnv(gym.Env):
+##creates an environment inheriting from gymnasium's gym.Env class
+class CrazyFlieEnv(gym.Env):
 
     metadata = {"render_modes": ["human"], "render_fps": 60}
-    def __init__(self,target, xmlPath):##initialization takes in a xml path for the crazy flies model and then binds it to a model pa
-        #parameter and also a data parameter
-        super().__init__
+    def __init__(self, target, xmlPath):
+        super().__init__()
         self.model = mj.MjModel.from_xml_path(xmlPath)
         self.data = mj.MjData(self.model)
         self.target_height = target
@@ -30,51 +29,43 @@ class CrazieFlieEnv(gym.Env):
         self.observation_space:spaces.Box = spaces.Box(low=-obs ,high=obs,dtype=np.float32)
         self.state:np.array = np.array([0,0,0,0.01])
            
-    def reset(self,seed = None, options = None):
-
+    def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-
-        ##reset model data, then reset the control data so that there is no thrust, or any rotaitonal movement
+        # Reset model data, then reset the control data so that there is no thrust, or any rotational movement
         mj.mj_resetData(self.model, self.data)
-
         self.data.ctrl[:] = 0
-        self.data.qpos[0:]=np.array([0,0,0.1,1,0,0,0],dtype=np.float32)
-    
-
-        self.data.qvel[0:]=0
-
+        # Start at a safer height above ground
+        self.data.qpos[0:] = np.array([0, 0, 0.3, 1, 0, 0, 0], dtype=np.float32)
+        self.data.qvel[0:] = 0
         current_obs = self._get_obs()
         current_info = {}
-
         return current_obs, current_info
         
-    def step(self,action):## the agent applies actions to the environemnt through this method
-       
-       ##clip the action then apply the action, check the current status of the environment, then determine reward based on that
-       action= np.clip(action,self.action_space.low,self.action_space.high)
-
-       self.data.ctrl[:] = action
-
-       mj.mj_step(self.model,self.data)
-
-       current_observation = self._get_obs()
-
-       distance = self.target_height-current_observation[2]
-       reward = -abs(distance)
-       done=False
-       truncated=False
-       info = {}
-       ##when drone crashes
-       if(current_observation[2] < 0.01 ):
-           done=True
-           reward =-100
-           print("dorne crashed")
-
-        ##when drone achieves hover distance
-       elif(distance==0):
-           done=True
-           print("drone achieved")
-       return current_observation,reward,done,truncated,info
+    def step(self, action):
+        # Clip the action and apply it
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        self.data.ctrl[:] = action
+        mj.mj_step(self.model, self.data)
+        current_observation = self._get_obs()
+        # Reward shaping
+        distance = abs(self.target_height - current_observation[2])
+        velocity = abs(current_observation[5])  # z-velocity
+        reward = -distance - 0.02 * velocity
+        # Small reward for staying above ground
+        if current_observation[2] > 0.01:
+            reward += 1.0
+        if current_observation[2] < 0.01:
+            reward -= 10  # further reduced crash penalty
+            done = True
+            print("drone crashed")
+        elif distance < 0.05:
+            reward += 10  # further increased bonus for hovering close to target
+            done = False
+        else:
+            done = False
+        truncated = False
+        info = {}
+        return current_observation, reward, done, truncated, info
        
 
 
@@ -105,7 +96,7 @@ if __name__ == "__main__":##this part is for testing purely
         "scene.xml"
     )
     xml_path = os.path.abspath(xml_path)
-    env = CrazieFlieEnv(0.5,xml_path)
+    env = CrazyFlieEnv(0.5,xml_path)
     obs, info= env.reset()
     print(obs)
     low = env.action_space.low

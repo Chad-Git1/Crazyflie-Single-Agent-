@@ -1,6 +1,6 @@
 mujoco==3.3.5
 numpy==1.26.3
-gymnasium==1.2.0
+gymnasium==0.29.1
 torch==2.8.0
 stable-baselines3==2.3.0
 tensorboard
