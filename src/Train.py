@@ -1,109 +1,66 @@
-
-from stable_baselines3 import PPO,SAC
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-import gymnasium as gym
-import CrazyFlieEnv
+# src/train_thrust_ppo.py
 import os
+from stable_baselines3 import PPO ## using PPO from SB3
+from stable_baselines3.common.monitor import Monitor## SB3 wrapped that tracks statistics like reward and successe/failure
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize 
+##----dummyVecEnv is a wrapped for a single gym.Env implementation
+##that converts it to a vectorized environemnt
+##since SB3 expects vectorized enviornments
+## VecNormalize normalizes the environment
+
+from CrazyFlieEnvMain import CrazyFlieEnv
+
+##factory function, a function that returns another function
+def make_env(xml_path: str, target_z: float, max_steps: int = 1500):##Sb3 expects a function that returns a function to return the environment wrapped with the monitor
+    def _f():
+        return Monitor(CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps))
+    return _f
 
 
+if __name__ == "__main__":
+    here = os.path.dirname(__file__)
 
+    # Point to your MuJoCo scene.xml (adjust path to your repo layout)
+    ##xml path for the crazyflydrone
+    xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
+    ##directory to save the models from training
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "CF_THRUST"))
+    ##where to save the logging for tensorboard
+    logs_dir = os.path.abspath(os.path.join(here, "..", "logs"))
+    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(logs_dir, exist_ok=True)
 
-##function ot create CrazyFlieEnv
-def make_env(xmlpath,target):
-    return CrazyFlieEnv.CrazieFlieEnv(target, xmlpath)
+    ##environment paramater constants
+    TARGET_Z = 0.5
+    MAX_STEPS = 1500
+    ##venv is vectorized environment, dummyVec expects an array of factory functions for a single envrionemnt to vectorize the environment
+    venv = DummyVecEnv([make_env(xml_path, TARGET_Z, MAX_STEPS)])
+    venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0)##scales the venv to normalized values for rewards and observations
 
-
-models_dir_ppo:str = "models/PPO"
-model_dir_SAC:str = "models/SAC"
-log_dir:str = "logs"
-
-xml_path = os.path.join(
-    os.path.dirname(__file__),   # current file directory
-    "..",                        # go up one folder (from src to project root)
-    "Assets",
-    "bitcraze_crazyflie_2",
-    "scene.xml"
-)
-TARGET = 0.5
-xml_path = os.path.abspath(xml_path)
-
-
-##wrap the environment we made with DUmmyVecEnv for vector of environments that are being monitored
-#sb3 only takes vectored environments, this allows for multiple enviornments, and we pass in a callable(a funciton to call which instantiates the enivornments)
-##then normalize the vecotred environment
-venv:DummyVecEnv = DummyVecEnv([lambda:Monitor(make_env(xmlpath=xml_path,target=TARGET))])
-venv = VecNormalize(venv=venv,norm_obs=True,norm_reward=True)
-
-##for the neural network create hidden layers of 64x64 shape according to docs
-policy_kwargs = dict(net_arch=[64, 64])
-
-##Stable baseline 3 PPO implementation, all these prameters are default, pass in the policy("MLP = multilayered perceptron")
-model = PPO(##just default PPO parameters no strategy now
-    "MlpPolicy",
-    venv,
-    learning_rate=3e-4,
-    n_steps=2048,
-    batch_size=64,
-    n_epochs=10,
-    gamma=0.99,
-    gae_lambda=0.95,
-    clip_range=0.2,
-    ent_coef=0.01,
-    vf_coef=0.1,
-    policy_kwargs=policy_kwargs,
-    verbose=1,
-    tensorboard_log=log_dir
-)
-
-##do same for SAC algorithm but with default parameters
-model2 = SAC(
-    "MlpPolicy",
-    venv,
-    verbose=1,
-    tensorboard_log=log_dir)
-
-total_time:int = 10
-TIMESTEPS=1000
-
-#each is 1000 timesteps and then for 10 iterations, learn a model then save it for both PPO and SAC
-for i in range(1,total_time):
-    model.learn(total_timesteps=TIMESTEPS,reset_num_timesteps=False,tb_log_name="PPO")
-    model2.learn(total_timesteps=TIMESTEPS,reset_num_timesteps=False,tb_log_name="SAC")
+    model = PPO(
+        "MlpPolicy", ##multilayered perceptron(which is default in sb3)
+        venv, ##pass in our vectorized environment, PPO expects this
+        learning_rate=3e-4, ##how fast weights update during gradient descent(smaller = slower but more stable)
+        n_steps=2048, ## how many steps of experience to collect before each training update. Runs the environment for n_steps and then stores all the info(obs,action,reward) and do gradient updates (large leads to mroe stable gradients but more memory use)
+        batch_size=64, ##minibatch size for each epoch, splits the large n_steps batch into mini-batches and traisn the neural network on that
+        n_epochs=10,##the training doesn't scan the batch once, it goes over multiple times to train data, each iteration is an epoch. too many can lead to overfitting(10 is a good value)
+        gamma=0.99,##discount factor, how much agent values future rewards over immediete
+        gae_lambda=0.95,##generalized advantage estimation(GAE) it reduces noise when estimating how good an action was. 
+        clip_range=0.2, ##PPO clips how much the new policy can change from the old one, it prevents instability and huge policy shifts
+        ent_coef=0.01, ###entropy coefficient, entropy is the randomness which encourages exploraiton in the loss funciton, higher means more exploraiton, lower means exploit what is already known
+        vf_coef=0.5,##how much value funciton loss(critic) contributes in compairson wiht policy loss and entropy bonus
+        policy_kwargs=dict(net_arch=[64, 64]),##architecture for neural network, two hidden layers of 64 neurons,
+        tensorboard_log=logs_dir,##logs tensorboard log files into the logs director
+        verbose=1,##prints training progress into the console(1 is minimal)
+    )
     
-    model.save(f"{models_dir_ppo}/{TIMESTEPS*i}")
-    model.save(f"{model_dir_SAC}/{TIMESTEPS*i}")
+    ##train the model by running it for a total_timsetep amount of simulation steps, each step is a single env.step() call
+    ##total_timsteps/episode_steps = (100,000)/1500=66 episodesroughly
+    model.learn(total_timesteps=100000, progress_bar=True)
 
-##to run model type python src/Train.py
-##too see tensorboard graphs run tensorboard logdir='The File path of the logs folder'
-
-
-
-
+    model.save(os.path.join(models_dir, "ppo_thrust.zip"))##saved the train model
+    venv.save(os.path.join(models_dir, "vecnormalize.pkl"))##also saved normalization stats
+    print("Saved model and VecNormalize to", models_dir)
 
 
-
-##evalaution function portion now
-# eval_env = DummyVecEnv([lambda: Monitor(make_env(target=0.5,xmlpath=xml_path))])
-# eval_env = VecNormalize.load("vecnormalize.pkl", eval_env)
-# eval_env.training = False
-# eval_env.norm_reward = False
-
-# obs = eval_env.reset()
-# done, truncated = False, False
-# while not (done or truncated):
-#     action, _ = model.predict(obs, deterministic=True)
-#     obs, reward, done, info = eval_env.step(action)
-
-
-# print(gym.registry.keys)##just to test 
-
-
-# vec_env = make_vec_env("", n_envs=4)
-
-
-
-
-    
-
+## the models folder will contain the network weights, hyperparameters and policy config.
