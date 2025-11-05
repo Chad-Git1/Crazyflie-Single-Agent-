@@ -54,8 +54,8 @@ class CrazyFlieEnv(gym.Env):
         thrust_slew_per_step: float = 0.02,##max change per step
         # Hover success parameters
         hover_band: float = 0.04,             # ±4 cm band
-        hover_required_steps: int = 60,       # 60 hz so 1 second to fullfill a steady hover(can increase this)
-        smooth_window: int = 60,
+        hover_required_steps: int = 600,       # 60 hz so 1 second to fullfill a steady hover(can increase this)
+        smooth_window: int = 600,
         # Anti-overshoot guards defining a soft ceiling for the drone to not go over(small penalty) and a hard ceiling where the episode terminates and big penalty
         soft_ceiling_margin: float = 0.20,    # start penalizing > target+0.20 m
         hard_ceiling_margin: float = 0.40,    # terminate if > target+0.40 m
@@ -88,17 +88,17 @@ class CrazyFlieEnv(gym.Env):
         self.target_z = float(target_z)
         self.max_steps = int(max_steps)
 
-        # --- Actuator autodetect ---
-        ##remove maybe?
-        self.nu = int(self.model.nu)##self.model.nu defines the number of actuators
-        if self.nu < 4:
-            raise ValueError("Model must expose ≥ 4 actuators (motors or virtual controls).")
-        self.ctrl_low = self.model.actuator_ctrlrange[:, 0].copy()
-        self.ctrl_high = self.model.actuator_ctrlrange[:, 1].copy()
+    #     # --- Actuator autodetect ---
+    #     ##remove maybe?
+    #     self.nu = int(self.model.nu)##self.model.nu defines the number of actuators
+    #     if self.nu < 4:
+    #         raise ValueError("Model must expose ≥ 4 actuators (motors or virtual controls).")
+    #     self.ctrl_low = self.model.actuator_ctrlrange[:, 0].copy()
+    #     self.ctrl_high = self.model.actuator_ctrlrange[:, 1].copy()
 
-        rng4 = np.c_[self.ctrl_low[:4], self.ctrl_high[:4]]
-        per_motor_like = np.allclose(rng4, rng4[0])
-     #----------------------------
+    #     rng4 = np.c_[self.ctrl_low[:4], self.ctrl_high[:4]]
+    #     per_motor_like = np.allclose(rng4, rng4[0])
+    #  #----------------------------
         self.mode = "thrust_plus_moments"## in the mode where the control is the thrust + x,y,z moments
         tmin, tmax = 0.0, 0.35 ##define thrust minimum and maximum values according to mj model (0,0.35)
 
@@ -147,38 +147,38 @@ class CrazyFlieEnv(gym.Env):
         #  track thrust jerk and vertical speed across the smooth_window(60 steps = 1s)to detect smooth hover with a deque datastructure
         self.du_hist = deque(maxlen=int(smooth_window))
         self.vz_hist = deque(maxlen=int(smooth_window))
-
+        self.frame_skip = 10
         # Ceiling values
         self.soft_ceiling = self.target_z + float(soft_ceiling_margin)
         self.hard_ceiling = self.target_z + float(hard_ceiling_margin)
 
-        # Rendering --- remove maube?
-        self.render_mode = render_mode
-        self._width, self._height = int(width), int(height)
-        self._camera_name = camera_name
-        self._follow_body_name = follow_body
-        self._follow_bid = None
-        self._cam_distance = float(cam_distance)
-        self._cam_elevation = float(cam_elevation)
-        self._cam_azimuth = float(cam_azimuth)
-        self._renderer: Optional[mj.Renderer] = None
-        if self.render_mode == "rgb_array":
-            self._renderer = mj.Renderer(self.model, height=self._height, width=self._width)
-        if self._follow_body_name is not None:
-            bid = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, self._follow_body_name)
-            if bid < 0:
-                raise ValueError(f"follow_body='{self._follow_body_name}' not found")
-            self._follow_bid = int(bid)
-        else:
-            self._follow_bid = 1 if self.model.nbody > 1 else None
+        # # Rendering --- remove maube?
+        # self.render_mode = render_mode
+        # self._width, self._height = int(width), int(height)
+        # self._camera_name = camera_name
+        # self._follow_body_name = follow_body
+        # self._follow_bid = None
+        # self._cam_distance = float(cam_distance)
+        # self._cam_elevation = float(cam_elevation)
+        # self._cam_azimuth = float(cam_azimuth)
+        # self._renderer: Optional[mj.Renderer] = None
+        # if self.render_mode == "rgb_array":
+        #     self._renderer = mj.Renderer(self.model, height=self._height, width=self._width)
+        # if self._follow_body_name is not None:
+        #     bid = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, self._follow_body_name)
+        #     if bid < 0:
+        #         raise ValueError(f"follow_body='{self._follow_body_name}' not found")
+        #     self._follow_bid = int(bid)
+        # else:
+        #     self._follow_bid = 1 if self.model.nbody > 1 else None
 
         self.step_idx = 0
 
-        if print_actuators:
-            names = [mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_ACTUATOR, i) for i in range(self.nu)]
-            print(f"[CFThrustHoverEnv] mode={self.mode}, nu={self.nu}")
-            print(f"[CFThrustHoverEnv] actuator names: {names}")
-            print(f"[CFThrustHoverEnv] ctrl ranges:\n{np.c_[self.ctrl_low, self.ctrl_high]}")
+        # if print_actuators:
+        #     names = [mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_ACTUATOR, i) for i in range(self.nu)]
+        #     print(f"[CFThrustHoverEnv] mode={self.mode}, nu={self.nu}")
+        #     print(f"[CFThrustHoverEnv] actuator names: {names}")
+        #     print(f"[CFThrustHoverEnv] ctrl ranges:\n{np.c_[self.ctrl_low, self.ctrl_high]}")
 
     
         ##reset function that is responsible for the start of every episode to reset values and returns the inital observaiton and info if needed
@@ -202,6 +202,7 @@ class CrazyFlieEnv(gym.Env):
         self.last_du = 0.0##reset the last thrust to 0
         ##reset the hover counter back to 0 for the start of a new episode
         self.hover_count = 0
+     
 
         ##clear the history of thrust oscilations and velocity magnitudes.
         self.du_hist.clear()
@@ -229,16 +230,18 @@ class CrazyFlieEnv(gym.Env):
         self.last_du = float(abs(new_u - self.u_cmd))##measure how much the thrust has changed and store it in last_du
         self.u_cmd = float(new_u)
 
-        if self.mode == "per_motor":
-            self.data.ctrl[:4] = self.u_cmd
-            if self.nu > 4:
-                self.data.ctrl[4:] = 0.0
-        else:
-            self.data.ctrl[0] = self.u_cmd##apply the thrust to the mujoco control
-            if self.nu > 1:
-                self.data.ctrl[1:4] = 0.0
-            if self.nu > 4:
-                self.data.ctrl[4:] = 0.0
+        self.data.ctrl[0] = self.u_cmd
+
+        # if self.mode == "per_motor":
+        #     self.data.ctrl[:4] = self.u_cmd
+        #     if self.nu > 4:
+        #         self.data.ctrl[4:] = 0.0
+        # else:
+        #   ##apply the thrust to the mujoco control
+        #     if self.nu > 1:
+        #         self.data.ctrl[1:4] = 0.0
+        #     if self.nu > 4:
+        #         self.data.ctrl[4:] = 0.0
 
     def step(self, action: np.ndarray): #
         ##reward functionality
@@ -248,7 +251,9 @@ class CrazyFlieEnv(gym.Env):
         self._apply_thrust(u_req)##send thrust to be filtered and applied to the data.ctrl
 
         # advance the physics step by sending in our data 
-        mj.mj_step(self.model, self.data)
+        
+        for _ in range(self.frame_skip):
+            mj.mj_step(self.model, self.data)
         self.step_idx += 1
 
         # state
@@ -321,7 +326,7 @@ class CrazyFlieEnv(gym.Env):
             mean_vz = float(np.mean(self.vz_hist)) if len(self.vz_hist) else 999.0 ##get averges over the vertical velocity in the last smoothing_window
             mean_du = float(np.mean(self.du_hist)) if len(self.du_hist) else 999.0## get the averges of thrust change in last smoothing_indow
             if mean_vz < 0.04 and mean_du < 0.010:## so if the average  vertical velocity is that and sam as thrust chnge then that constitutes successful hover
-                reward += 25.0
+                reward += 50.0
                 return obs, reward, True, False, {
                     "success": True,
                     "hover_steps": self.hover_count,
@@ -345,33 +350,33 @@ class CrazyFlieEnv(gym.Env):
 
     # ---------- Rendering (rgb_array) ----------
 
-    def _apply_follow_camera(self):
-        if self._renderer is None or self._follow_bid is None:
-            return
-        target = self.data.xpos[self._follow_bid].copy()
-        cam = self._renderer.cam
-        cam.type = mj.mjtCamera.mjCAMERA_FREE
-        cam.lookat[:] = target
-        cam.distance = self._cam_distance
-        cam.elevation = self._cam_elevation
-        cam.azimuth = self._cam_azimuth
+    # def _apply_follow_camera(self):
+    #     if self._renderer is None or self._follow_bid is None:
+    #         return
+    #     target = self.data.xpos[self._follow_bid].copy()
+    #     cam = self._renderer.cam
+    #     cam.type = mj.mjtCamera.mjCAMERA_FREE
+    #     cam.lookat[:] = target
+    #     cam.distance = self._cam_distance
+    #     cam.elevation = self._cam_elevation
+    #     cam.azimuth = self._cam_azimuth
 
-    def render(self) -> Optional[np.ndarray]:
-        if self.render_mode == "rgb_array":
-            if self._renderer is None:
-                self._renderer = mj.Renderer(self.model, height=self._height, width=self._width)
-            if self._camera_name is not None:
-                self._renderer.update_scene(self.data, camera=self._camera_name)
-            else:
-                self._apply_follow_camera()
-                self._renderer.update_scene(self.data)
-            img = self._renderer.render()
-            return np.clip(img * 255.0, 0, 255).astype(np.uint8)
-        elif self.render_mode == "human":
-            return None
-        return None
+    # def render(self) -> Optional[np.ndarray]:
+    #     if self.render_mode == "rgb_array":
+    #         if self._renderer is None:
+    #             self._renderer = mj.Renderer(self.model, height=self._height, width=self._width)
+    #         if self._camera_name is not None:
+    #             self._renderer.update_scene(self.data, camera=self._camera_name)
+    #         else:
+    #             self._apply_follow_camera()
+    #             self._renderer.update_scene(self.data)
+    #         img = self._renderer.render()
+    #         return np.clip(img * 255.0, 0, 255).astype(np.uint8)
+    #     elif self.render_mode == "human":
+    #         return None
+    #     return None
 
-    def close(self):
-        if self._renderer is not None:
-            self._renderer.close()
-            self._renderer = None
+    # def close(self):
+    #     if self._renderer is not None:
+    #         self._renderer.close()
+    #         self._renderer = None

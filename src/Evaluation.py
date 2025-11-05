@@ -10,6 +10,7 @@ from stable_baselines3.common.monitor import Monitor
 
 ##change xml value for thrust range
 ##parallel environment implementation
+##introduce complexity to action space 
 ##for drone api figure out which things we can control
 ##use weights and biases then run hyperparameter suite over night
 #reduce entropy gain/loss
@@ -36,8 +37,8 @@ if __name__ == "__main__":
     here = os.path.dirname(__file__)
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##path to models and the specific model zip file
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "CF_THRUST"))
-    model_path = os.path.join(models_dir, "ppo_thrust.zip")
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Test"))
+    model_path = os.path.join(models_dir, "test.zip")
     norm_path  = os.path.join(models_dir, "vecnormalize.pkl")
 
     TARGET_Z  = 0.5
@@ -53,26 +54,29 @@ if __name__ == "__main__":
     vecnorm.norm_reward = False##don't normalize rewards for real simulation
 
     ##Create a single (non-vectorized) env so we can open the live viewer
-    env = CFThrustHoverEnv(
+    env = CrazyFlieEnv(
         xml_path=xml_path,
         target_z=TARGET_Z,
-        max_steps=MAX_STEPS,
+        max_steps=MAX_STEPS
+      
         # render_mode=None because we'll use the interactive viewer below
     )## we don't wrap it with dummyVecEnv because mujocco only works with a single env
     obs, _ = env.reset()
+    dt_sim = env.model.opt.timestep
 
     #  Launch MuJoCo's interactive viewer; step the env and sync the window
     with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
         terminated = False
         truncated = False
         ep_return = 0.0
-
+      
         # simple 1 Hz HUD print
         t0 = time.time()
         last_print = t0
 
         while not (terminated or truncated):
             # normalize observation like during training (batch dimension required)
+           
             obs_n = vecnorm.normalize_obs(obs[None, :])
 
             # policy prediction (deterministic for evaluation)
@@ -82,6 +86,7 @@ if __name__ == "__main__":
 
             # step env with scalar thrust
             obs, reward, terminated, truncated, info = env.step(u)
+            print(obs,info)
             ep_return += reward
 
             # update viewer
@@ -89,10 +94,13 @@ if __name__ == "__main__":
 
             # Print a tiny HUD each second
             now = time.time()
+           
             if now - last_print >= 1.0:
                 z = float(obs[2])
                 vz = float(obs[9])
                 print(f"t={int(now - t0):2d}s | z={z:+.3f} m  vz={vz:+.3f} m/s  thrust={u:.3f}  R={ep_return:.1f}")
                 last_print = now
+            time.sleep(dt_sim*10)
+            
 
         print(f"\nEpisode finished. Return={ep_return:.2f}, terminated={terminated}, truncated={truncated}")

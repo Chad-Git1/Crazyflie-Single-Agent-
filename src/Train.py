@@ -24,9 +24,9 @@ if __name__ == "__main__":
     ##xml path for the crazyflydrone
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##directory to save the models from training
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "CF_THRUST"))
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Test"))
     ##where to save the logging for tensorboard
-    logs_dir = os.path.abspath(os.path.join(here, "..", "logs"))
+    logs_dir = os.path.abspath(os.path.join(here, "..", "logs2"))
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
@@ -56,11 +56,17 @@ if __name__ == "__main__":
     
     ##train the model by running it for a total_timsetep amount of simulation steps, each step is a single env.step() call
     ##total_timsteps/episode_steps = (100,000)/1500=66 episodesroughly
-    model.learn(total_timesteps=100000, progress_bar=True)
+    model.learn(total_timesteps=200000, progress_bar=True)
 
-    model.save(os.path.join(models_dir, "ppo_thrust.zip"))##saved the train model
+    model.save(os.path.join(models_dir, "test.zip"))##saved the train model
     venv.save(os.path.join(models_dir, "vecnormalize.pkl"))##also saved normalization stats
     print("Saved model and VecNormalize to", models_dir)
 
 
 ## the models folder will contain the network weights, hyperparameters and policy config.
+
+
+##Achieve hover for long time first
+##Either 1. Increase action space complexity
+## or 2. Introduce landing task
+##do parallel environemnts
