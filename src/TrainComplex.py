@@ -81,4 +81,4 @@ if __name__ == "__main__":
 ##Achieve hover for long time first
 ##Either 1. Increase action space complexity
 ## or 2. Introduce landing task
-##do parallel environemnts
+##do parallel environemnts 
