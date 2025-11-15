@@ -37,11 +37,11 @@ if __name__ == "__main__":
     here = os.path.dirname(__file__)
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##path to models and the specific model zip file
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex", f"seed_{0}", "seed_2"))
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2"))
     model_path = os.path.join(models_dir, "complex.zip")
     norm_path  = os.path.join(models_dir, "vecnormalize.pkl")
 
-    TARGET_Z  = 0.5
+    TARGET_Z  = 1
     MAX_STEPS = 1500
 
     #this loads the trained model(which is the neural network weights and training hyperparameters fromt he disk)

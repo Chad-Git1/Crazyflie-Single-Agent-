@@ -11,13 +11,14 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from CrazyFlieEnvComplex import CrazyFlieEnv
 
 ##factory function, a function that returns another function
-def make_env(xml_path: str, target_z: float, max_steps: int = 1000, rank:int = 0, base_seed:int = 0):##Sb3 expects a function that returns a function to return the environment wrapped with the monitor
+def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank:int = 0):##Sb3 expects a function that returns a function to return the environment wrapped with the monitor
     def _f():
 
-        env = CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps, n_stack=4)
+        env = CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps, n_stack=4,hover_required_steps=600)
         env = Monitor(env)
-        env.reset(seed=rank+base_seed)
-        env.action_space.seed(base_seed + 10_000 + rank)
+        env.reset(seed=rank)
+        # env.reset(seed=rank+base_seed)
+        # env.action_space.seed(base_seed + 10_000 + rank)
         return env
     return _f
 
@@ -29,54 +30,49 @@ if __name__ == "__main__":
     ##xml path for the crazyflydrone
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##directory to save the models from training
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex"))
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2"))
     ##where to save the logging for tensorboard
-    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplex"))
+    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplex2"))
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
     ##environment paramater constants
-    TARGET_Z = 0.5
-    MAX_STEPS = 1000
+    TARGET_Z = 1
+    MAX_STEPS = 1500
     N_ENVS = 8  # or 4, 16, etc.
-    SEEDS = [0, 1, 2]
+    SEEDS = [0]
     
-    for seed in SEEDS:
-        
-        models_dir = os.path.join(models_dir, f"seed_{seed}")
-        logs_dir   = os.path.join(logs_dir,   f"seed_{seed}")
-        os.makedirs(models_dir, exist_ok=True)
-        os.makedirs(logs_dir, exist_ok=True)
-        env_fns = [make_env(xml_path, TARGET_Z, MAX_STEPS, rank=i,base_seed=seed) for i in range(N_ENVS)]
-        ##venv is vectorized environment, dummyVec expects an array of factory functions for a single envrionemnt to vectorize the environment
-        venv = DummyVecEnv(env_fns=env_fns)
-        venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0)##scales the venv to normalized values for rewards and observations
+  
+    env_fns = [make_env(xml_path, TARGET_Z, MAX_STEPS, rank=i) for i in range(N_ENVS)]
+    ##venv is vectorized environment, dummyVec expects an array of factory functions for a single envrionemnt to vectorize the environment
+    venv = DummyVecEnv(env_fns=env_fns)
+    venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0)##scales the venv to normalized values for rewards and observations
 
-        model = PPO(
-            "MlpPolicy", ##multilayered perceptron(which is default in sb3)
-            venv, ##pass in our vectorized environment, PPO expects this
-            learning_rate=3e-4, ##how fast weights update during gradient descent(smaller = slower but more stable)
-            n_steps=2048, ## how many steps of experience to collect before each training update. Runs the environment for n_steps and then stores all the info(obs,action,reward) and do gradient updates (large leads to mroe stable gradients but more memory use)
-            batch_size=64, ##minibatch size for each epoch, splits the large n_steps batch into mini-batches and traisn the neural network on that
-            n_epochs=10,##the training doesn't scan the batch once, it goes over multiple times to train data, each iteration is an epoch. too many can lead to overfitting(10 is a good value)
-            gamma=0.99,##discount factor, how much agent values future rewards over immediete
-            gae_lambda=0.95,##generalized advantage estimation(GAE) it reduces noise when estimating how good an action was. 
-            clip_range=0.2, ##PPO clips how much the new policy can change from the old one, it prevents instability and huge policy shifts
-            ent_coef=0.001, ###entropy coefficient, entropy is the randomness which encourages exploraiton in the loss funciton, higher means more exploraiton, lower means exploit what is already known
-            vf_coef=0.5,##how much value funciton loss(critic) contributes in compairson wiht policy loss and entropy bonus
-            policy_kwargs=dict(net_arch=[64, 64]),##architecture for neural network, two hidden layers of 64 neurons,
-            tensorboard_log=logs_dir,##logs tensorboard log files into the logs director
-            verbose=1,##prints training progress into the console(1 is minimal)
-            seed=seed
-        )
+    model = PPO(
+        "MlpPolicy", ##multilayered perceptron(which is default in sb3)
+        venv, ##pass in our vectorized environment, PPO expects this
+        learning_rate=3e-4, ##how fast weights update during gradient descent(smaller = slower but more stable)
+        n_steps=2048, ## how many steps of experience to collect before each training update. Runs the environment for n_steps and then stores all the info(obs,action,reward) and do gradient updates (large leads to mroe stable gradients but more memory use)
+        batch_size=64, ##minibatch size for each epoch, splits the large n_steps batch into mini-batches and traisn the neural network on that
+        n_epochs=10,##the training doesn't scan the batch once, it goes over multiple times to train data, each iteration is an epoch. too many can lead to overfitting(10 is a good value)
+        gamma=0.99,##discount factor, how much agent values future rewards over immediete
+        gae_lambda=0.95,##generalized advantage estimation(GAE) it reduces noise when estimating how good an action was. 
+        clip_range=0.2, ##PPO clips how much the new policy can change from the old one, it prevents instability and huge policy shifts
+        ent_coef=0.001, ###entropy coefficient, entropy is the randomness which encourages exploraiton in the loss funciton, higher means more exploraiton, lower means exploit what is already known
+        vf_coef=0.5,##how much value funciton loss(critic) contributes in compairson wiht policy loss and entropy bonus
+        policy_kwargs=dict(net_arch=[64, 64]),##architecture for neural network, two hidden layers of 64 neurons,
+        tensorboard_log=logs_dir,##logs tensorboard log files into the logs director
+        verbose=1##prints training progress into the console(1 is minimal)
         
-        ##train the model by running it for a total_timsetep amount of simulation steps, each step is a single env.step() call
-        ##total_timsteps/episode_steps = (100,000)/1500=66 episodesroughly
-        model.learn(total_timesteps=1000000, progress_bar=True)
+    )
+    
+    ##train the model by running it for a total_timsetep amount of simulation steps, each step is a single env.step() call
+    ##total_timsteps/episode_steps = (100,000)/1500=66 episodesroughly
+    model.learn(total_timesteps=1000000, progress_bar=True)
 
-        model.save(os.path.join(models_dir, "complex.zip"))##saved the train model
-        venv.save(os.path.join(models_dir, "vecnormalize.pkl"))##also saved normalization stats
-        print(f"Saved model + VecNormalize for seed={seed} into {models_dir}")
+    model.save(os.path.join(models_dir, "complex.zip"))##saved the train model
+    venv.save(os.path.join(models_dir, "vecnormalize.pkl"))##also saved normalization stats
+    print(f"Saved model + VecNormalize into {models_dir}")
 
 
 ## the models folder will contain the network weights, hyperparameters and policy config.
