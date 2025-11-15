@@ -316,17 +316,25 @@ class CrazyFlieEnv(gym.Env):
 
         # Early success: in band and calm
         in_band = height_err <= self.band and abs(vz) < 0.05
+        if(not in_band and self.hover_count>200):
+            reward-=100
+
         if in_band: ##if the height_err which is the distance between the drone and the target is within the band, so if the drone is and vertical velocity is less than 0.05
             ##then increment hover_count as a successful hover step
             self.hover_count += 1
+            reward+=1
         else:##if outside band, then decrement the hover counter by 1 but don't let it go belpw 0
-            self.hover_count = max(0, self.hover_count - 1)
+            # self.hover_count = max(0, self.hover_count - 1)
+            self.hover_count = 0
+            
+
+       
 
         if self.hover_count >= self.hover_required:## if we reach hover counter
             mean_vz = float(np.mean(self.vz_hist)) if len(self.vz_hist) else 999.0 ##get averges over the vertical velocity in the last smoothing_window
             mean_du = float(np.mean(self.du_hist)) if len(self.du_hist) else 999.0## get the averges of thrust change in last smoothing_indow
             if mean_vz < 0.04 and mean_du < 0.010:## so if the average  vertical velocity is that and sam as thrust chnge then that constitutes successful hover
-                reward += 50.0
+                reward += 200.0
                 return obs, reward, True, False, {
                     "success": True,
                     "hover_steps": self.hover_count,
