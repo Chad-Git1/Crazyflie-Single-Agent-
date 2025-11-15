@@ -8,12 +8,16 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 ##since SB3 expects vectorized enviornments
 ## VecNormalize normalizes the environment
 
-from CrazyFlieEnvMain import CrazyFlieEnv
+from CrazyFlieEnvComplex import CrazyFlieEnv
 
 ##factory function, a function that returns another function
-def make_env(xml_path: str, target_z: float, max_steps: int = 1500):##Sb3 expects a function that returns a function to return the environment wrapped with the monitor
+def make_env(xml_path: str, target_z: float, max_steps: int = 1000, rank:int = 0):##Sb3 expects a function that returns a function to return the environment wrapped with the monitor
     def _f():
-        return Monitor(CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps))
+
+        env = CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps)
+        env = Monitor(env)
+        env.reset(seed=rank)
+        return env
     return _f
 
 
@@ -33,8 +37,12 @@ if __name__ == "__main__":
     ##environment paramater constants
     TARGET_Z = 0.5
     MAX_STEPS = 1500
+    N_ENVS = 2  # or 4, 16, etc.
+
+
+    env_fns = [make_env(xml_path, TARGET_Z, MAX_STEPS, rank=i) for i in range(N_ENVS)]
     ##venv is vectorized environment, dummyVec expects an array of factory functions for a single envrionemnt to vectorize the environment
-    venv = DummyVecEnv([make_env(xml_path, TARGET_Z, MAX_STEPS)])
+    venv = DummyVecEnv(env_fns=env_fns)
     venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0)##scales the venv to normalized values for rewards and observations
 
     model = PPO(
@@ -47,7 +55,7 @@ if __name__ == "__main__":
         gamma=0.99,##discount factor, how much agent values future rewards over immediete
         gae_lambda=0.95,##generalized advantage estimation(GAE) it reduces noise when estimating how good an action was. 
         clip_range=0.2, ##PPO clips how much the new policy can change from the old one, it prevents instability and huge policy shifts
-        ent_coef=0.01, ###entropy coefficient, entropy is the randomness which encourages exploraiton in the loss funciton, higher means more exploraiton, lower means exploit what is already known
+        ent_coef=0.001, ###entropy coefficient, entropy is the randomness which encourages exploraiton in the loss funciton, higher means more exploraiton, lower means exploit what is already known
         vf_coef=0.5,##how much value funciton loss(critic) contributes in compairson wiht policy loss and entropy bonus
         policy_kwargs=dict(net_arch=[64, 64]),##architecture for neural network, two hidden layers of 64 neurons,
         tensorboard_log=logs_dir,##logs tensorboard log files into the logs director
@@ -56,7 +64,7 @@ if __name__ == "__main__":
     
     ##train the model by running it for a total_timsetep amount of simulation steps, each step is a single env.step() call
     ##total_timsteps/episode_steps = (100,000)/1500=66 episodesroughly
-    model.learn(total_timesteps=200000, progress_bar=True)
+    model.learn(total_timesteps=1000000, progress_bar=True)
 
     model.save(os.path.join(models_dir, "test.zip"))##saved the train model
     venv.save(os.path.join(models_dir, "vecnormalize.pkl"))##also saved normalization stats

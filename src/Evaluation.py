@@ -23,13 +23,28 @@ from stable_baselines3.common.monitor import Monitor
 ##alter mujocco step for 10 steps rather than 1 physics step
 
 
-from CrazyFlieEnvMain import CrazyFlieEnv
+##Week 10
+##look at seeds for hyperparameter tuning 
+##randomize hover heights and phases to help drone learnign with height 
+##add some noises
+##domain randomization
+##randomize the observations that came back from the drone, randomize the actions, randomize the the physics steps
+##add safety controls for certain pitch/rolls to catch issues or if it goes past a certain point, limit
+##
+
+
+##add some gausian noise(randomize actions, rnadomize the physcs steps etc.)
+##do hyperparameter sweep over night with some seeds
+##add safety controls for certain pitch/rolls to catch issues or if it goes past a certain point
+##work on actual environment
+
+from CrazyFlieEnvComplex import CrazyFlieEnv
 
 
 # Build a tiny vec env only to load VecNormalize stats
 def _make_norm_loader(xml_path: str, target_z: float, max_steps: int):##factor function to load the environemnt
     def _thunk():
-        return Monitor(CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps))
+        return Monitor(CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps,hover_required_steps=300))
     return DummyVecEnv([_thunk])
 
 
@@ -61,46 +76,65 @@ if __name__ == "__main__":
       
         # render_mode=None because we'll use the interactive viewer below
     )## we don't wrap it with dummyVecEnv because mujocco only works with a single env
-    obs, _ = env.reset()
+    obs_raw, _ = env.reset()
     dt_sim = env.model.opt.timestep
+    dt_step = dt_sim * env.frame_skip 
 
     #  Launch MuJoCo's interactive viewer; step the env and sync the window
     with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
         terminated = False
         truncated = False
         ep_return = 0.0
+
+       
       
         # simple 1 Hz HUD print
         t0 = time.time()
         last_print = t0
-
         while not (terminated or truncated):
-            # normalize observation like during training (batch dimension required)
-           
-            obs_n = vecnorm.normalize_obs(obs[None, :])
+            
+            obs_norm = vecnorm.normalize_obs(obs_raw[None, :])  # shape (1, obs_dim)
 
-            # policy prediction (deterministic for evaluation)
-            action, _ = model.predict(obs_n, deterministic=True)
-            # action can be shape (1,) or (1,1); reduce to scalar
-            u = float(np.asarray(action).squeeze())
+            # Policy prediction (deterministic for evaluation)
+            action, _ = model.predict(obs_norm, deterministic=True)
 
-            # step env with scalar thrust
-            obs, reward, terminated, truncated, info = env.step(u)
-            print(obs,info)
-            ep_return += reward
+            # Make sure it's a NumPy array
+            action = np.asarray(action, dtype=np.float32)
+            if action.ndim == 2:
+                a = action[0]     # (4,)
+            else:
+                a = action        # (4,)
 
-            # update viewer
+            thrust = float(a[0])
+            mx = float(a[1])
+            my = float(a[2])
+            mz = float(a[3])
+
+            # Step the *real* env with this action (un-normalized env)
+            obs_raw, reward, terminated, truncated, info = env.step(a)
+            ep_return += float(reward)
+
+            # Logging values from *raw* obs
+            x, y, z = float(obs_raw[0]), float(obs_raw[1]), float(obs_raw[2])
+            vx, vy, vz = float(obs_raw[7]), float(obs_raw[8]), float(obs_raw[9])
+
+            # Update viewer
             viewer.sync()
 
-            # Print a tiny HUD each second
+            # HUD at ~1 Hz
             now = time.time()
-           
             if now - last_print >= 1.0:
-                z = float(obs[2])
-                vz = float(obs[9])
-                print(f"t={int(now - t0):2d}s | z={z:+.3f} m  vz={vz:+.3f} m/s  thrust={u:.3f}  R={ep_return:.1f}")
                 last_print = now
-            time.sleep(dt_sim*10)
-            
+                R = float(ep_return)
+                print(
+                    f"t={int(now - t0):2d}s | "
+                    f"z={z:+.3f} m  vz={vz:+.3f} m/s  "
+                    f"thrust={thrust:.3f}, "
+                    f"(x,y,z)=({x:+.3f},{y:+.3f},{z:+.3f})  "
+                    f"R={R:.1f}"
+                )
 
-        print(f"\nEpisode finished. Return={ep_return:.2f}, terminated={terminated}, truncated={truncated}")
+            # Match real time: 1 env.step = frame_skip * dt_sim seconds
+            time.sleep(dt_step)
+
+    print(f"\nEpisode finished. Return={ep_return:.2f}, terminated={terminated}, truncated={truncated}, Info: {info}")
