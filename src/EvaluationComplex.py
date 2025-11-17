@@ -23,6 +23,37 @@ from stable_baselines3.common.monitor import Monitor
 ##alter mujocco step for 10 steps rather than 1 physics step
 
 
+
+##change xml value for thrust range
+##parallel environment implementation
+##introduce complexity to action space 
+##for drone api figure out which things we can control
+##use weights and biases then run hyperparameter suite over night
+#reduce entropy gain/loss
+##reduce episode length and increase episode count
+## have at least 3 seeds
+
+##in action space add penalty for difference in previous and current action to prevent large thrust
+##for input to pokicy add a history of states called frame stacking
+##next 2 weeks, add guasian noise for domain randomization
+##alter mujocco step for 10 steps rather than 1 physics step
+
+
+##Week 10
+##look at seeds for hyperparameter tuning 
+##randomize hover heights and phases to help drone learnign with height 
+##add some noises
+##domain randomization
+##randomize the observations that came back from the drone, randomize the actions, randomize the the physics steps
+##add safety controls for certain pitch/rolls to catch issues or if it goes past a certain point, limit
+##
+
+
+##add some gausian noise(randomize actions, rnadomize the physcs steps etc.)
+##do hyperparameter sweep over night with some seeds
+##add safety controls for certain pitch/rolls to catch issues or if it goes past a certain point
+##work on actual environment
+
 from CrazyFlieEnvComplex import CrazyFlieEnv
 
 
@@ -37,9 +68,9 @@ if __name__ == "__main__":
     here = os.path.dirname(__file__)
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##path to models and the specific model zip file
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2"))
-    model_path = os.path.join(models_dir, "complex.zip")
-    norm_path  = os.path.join(models_dir, "vecnormalize.pkl")
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2_DR"))
+    model_path = os.path.join(models_dir, "complex_dr.zip")
+    norm_path  = os.path.join(models_dir, "vecnormalize_dr.pkl")
 
     TARGET_Z  = 1
     MAX_STEPS = 1500
@@ -58,10 +89,17 @@ if __name__ == "__main__":
         xml_path=xml_path,
         target_z=TARGET_Z,
         max_steps=MAX_STEPS,
-        n_stack=4
-      
-        # render_mode=None because we'll use the interactive viewer below
-    )## we don't wrap it with dummyVecEnv because mujocco only works with a single env
+        n_stack=4,
+        hover_required_steps=600,
+        # Evaluation: no extra noise (or use milder values)
+        obs_noise_std=0.05,
+        obs_bias_std=0.05,
+        action_noise_std=0.05,
+        motor_scale_std=0.05,  # ±2% thrust gain
+        frame_skip=10,
+        frame_skip_jitter=2,  
+    )
+## we don't wrap it with dummyVecEnv because mujocco only works with a single env
     obs_raw, _ = env.reset()
     dt_sim = env.model.opt.timestep
     dt_step = dt_sim * env.frame_skip 

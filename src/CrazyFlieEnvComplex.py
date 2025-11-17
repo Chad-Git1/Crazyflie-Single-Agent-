@@ -50,7 +50,13 @@ class CrazyFlieEnv(gym.Env):
         # Anti-overshoot guards defining a soft ceiling for the drone to not go over(small penalty) and a hard ceiling where the episode terminates and big penalty
         soft_ceiling_margin: float = 0.20,    # start penalizing > target+0.20 m
         hard_ceiling_margin: float = 0.40,    # terminate if > target+0.40 m
-        print_actuators: bool = False,##remove?
+        ##these are noise paramters to simulate domain randomization
+        obs_noise_std: float = 0.0,       # per-step Gaussian noise on obs
+        obs_bias_std: float = 0.0,        # per-episode constant bias on obs
+        action_noise_std: float = 0.0,    # Gaussian noise on actions
+        motor_scale_std: float = 0.0,     # per-episode thrust gain error
+        frame_skip: int = 10,             # base frame skip (was 10)
+        frame_skip_jitter: int = 0,       # +/- jitter in frame skip per episode
     ):
         
         """ Initilaization function to first create the CrazyFlyEnv
@@ -82,6 +88,20 @@ class CrazyFlieEnv(gym.Env):
         ######Frame Stack#######
         self.n_stack = int(n_stack)   ## how many past frames to stack, frame stacking is for passing an array of observations
         self.obs_dim_single = 13 ##defining a single framed observation as 13 dimensions
+        #### Domain randomizations
+        self.obs_noise_std = float(obs_noise_std)
+        self.obs_bias_std = float(obs_bias_std)
+        self.action_noise_std = float(action_noise_std)
+        self.motor_scale_std = float(motor_scale_std)
+
+        self.frame_skip_base = int(frame_skip)
+        self.frame_skip_jitter = int(frame_skip_jitter)
+        self.frame_skip = self.frame_skip_base  # will be randomized in reset()
+
+        # Per-episode random variables (filled in reset)
+        self.obs_bias = np.zeros(self.obs_dim_single, dtype=np.float32)
+        self.motor_scale = 1.0
+
 
         #remove maybe? 
         self.mode = "thrust_plus_moments"## in the mode where the control is the thrust + x,y,z moments
@@ -143,7 +163,7 @@ class CrazyFlieEnv(gym.Env):
         #  track thrust jerk and vertical speed across the smooth_window(60 steps = 1s)to detect smooth hover with a deque datastructure
         self.du_hist = deque(maxlen=int(smooth_window))##tracking thrust
         self.vz_hist = deque(maxlen=int(smooth_window))##tracking vertical velocity
-        self.frame_skip = 10##for mujoco, since mujoco steps are 0.02, this makes it 0.2
+       
         # Ceiling values
         self.soft_ceiling = self.target_z + float(soft_ceiling_margin)
         self.hard_ceiling = self.target_z + float(hard_ceiling_margin)
@@ -157,6 +177,67 @@ class CrazyFlieEnv(gym.Env):
         self.max_ground_steps = 50        # how many steps allowed near ground before we hit it with a penalty
         self.ground_steps = 0
         self.prev_dz = 0.0
+
+
+
+    def _apply_obs_noise(self, single: np.ndarray) -> np.ndarray:
+            """
+            Take a clean single-frame observation and add:
+            - per-episode bias (obs_bias)
+            - per-step Gaussian noise
+            """
+            noisy = single.astype(np.float32).copy()
+
+            # Bias (same every step this episode)
+            if self.obs_bias_std > 0.0:
+                noisy += self.obs_bias
+
+            # Per-step Gaussian noise
+            if self.obs_noise_std > 0.0:
+                rng = getattr(self, "np_random", np.random)
+                noisy += rng.normal(
+                    loc=0.0,
+                    scale=self.obs_noise_std,
+                    size=single.shape,
+                ).astype(np.float32)
+
+            return noisy
+
+    def _sample_episode_randomization(self):
+            """
+            Sample all per-episode random factors:
+            - observation bias
+            - motor thrust gain
+            - frame_skip jitter
+            """
+            rng = getattr(self, "np_random", np.random)
+
+            # Observation bias (e.g., altimeter offset)
+            if self.obs_bias_std > 0.0:
+                self.obs_bias = rng.normal(
+                    loc=0.0,
+                    scale=self.obs_bias_std,
+                    size=self.obs_dim_single,
+                ).astype(np.float32)
+            else:
+                self.obs_bias[:] = 0.0
+
+            # Motor thrust gain error (motors slightly stronger/weaker)
+            if self.motor_scale_std > 0.0:
+                self.motor_scale = float(1.0 + rng.normal(0.0, self.motor_scale_std))
+            else:
+                self.motor_scale = 1.0
+
+            # Frame skip jitter (control frequency variation)
+            if self.frame_skip_jitter > 0:
+                # inclusive low, exclusive high – like randint
+                jitter = int(rng.integers(
+                    -self.frame_skip_jitter,
+                    self.frame_skip_jitter + 1
+                ))
+                self.frame_skip = max(1, self.frame_skip_base + jitter)
+            else:
+                self.frame_skip = self.frame_skip_base
 
 
     
@@ -183,28 +264,29 @@ class CrazyFlieEnv(gym.Env):
         self.hover_count = 0
      
 
-        ##clear the history of thrust oscilations and velocity magnitudes.
-        self.du_hist.clear()
-        self.vz_hist.clear()
-        ##reset the step index 
+        self.du_hist.clear()##clear history of thrusts
+        self.vz_hist.clear()##clear history of vertical velocity
         self.step_idx = 0
+        self.ground_steps = 0
 
-        self.ground_steps = 0 ##reset the ground stall detection counter
+        # --- sample per-episode randomization (bias, motor scale, frame_skip) ---
+        self._sample_episode_randomization()
 
-        z0 = float(self.data.qpos[2])
-        self.prev_dz = z0 - self.target_z##intialize our height error(distance of drone to target)
+        # --- frame stack reset using NOISY obs (what agent sees) ---
+        self.obs_stack.clear()
+        single_clean = self._get_single_obs()
+        single = self._apply_obs_noise(single_clean)
 
-
-         # --- frame stack reset ---
-        self.obs_stack.clear()##clear list of observations
-        single = self._get_single_obs()
         for _ in range(self.n_stack):
             self.obs_stack.append(single.copy())
+
         if self.n_stack == 1:
             obs = single
         else:
             obs = np.concatenate(list(self.obs_stack), axis=0).astype(np.float32)
+
         return obs, {}
+
 
     def _apply_thrust(self, u_scalar: float,m_vec:np.ndarray): ####this applies the filtering to the thrust, u_scalar is the thrust aciton
         ## in this funciton we perform acutator shaping or thrust smoothing and moments
@@ -257,32 +339,48 @@ class CrazyFlieEnv(gym.Env):
         # scalar thrust request
         ##requested thrust is clipped first to be in the action space range
         # u_req = float(np.clip(np.asarray(action).squeeze(), self.action_space.low[0], self.action_space.high[0]))
-        action = np.asarray(action, dtype=np.float32).squeeze()
-        if action.shape == ():  # handle scalar edge-case
+        # Convert to array and sanity-check shape
+        a = np.asarray(action, dtype=np.float32).squeeze()
+        if a.shape == ():
             raise ValueError("Action must be 4D: [thrust, mx, my, mz]")
 
-        # Clip to action space
-        a_clipped = np.clip(action, self.action_space.low, self.action_space.high)
+        # --- action randomization / noise ---
+        if self.action_noise_std > 0.0:
+            rng = getattr(self, "np_random", np.random)
+            a = a + rng.normal(0.0, self.action_noise_std, size=a.shape).astype(np.float32)
+
+        # Clip to valid action space
+        a_clipped = np.clip(a, self.action_space.low, self.action_space.high)
+
+        # Split into thrust + moments
         u_req = float(a_clipped[0])
         m_req = a_clipped[1:4]
-        self._apply_thrust(u_req,m_req)##send thrust to be filtered and applied to the data.ctrl
 
-        # advance the physics step by sending in our data 
+        # Apply per-episode motor scaling on thrust
+        u_req = float(u_req * self.motor_scale)
+        # Re-clip thrust after scaling
+        u_req = float(np.clip(u_req, self.action_space.low[0], self.action_space.high[0]))
+
+        # Send to actuator shaping (low-pass + slew) and MuJoCo
+        self._apply_thrust(u_req, m_req)
+
+        # advance the physics step
         for _ in range(self.frame_skip):
             mj.mj_step(self.model, self.data)
         self.step_idx += 1
-
-
       
-        # Single-frame obs, so get the first frame
-        single = self._get_single_obs()
+         # Clean single observation from MuJoCo
+        single_clean = self._get_single_obs()
 
-          # Update frame stack and build stacked obs for the agent
+        # Noisy obs for the agent
+        single = self._apply_obs_noise(single_clean)
+
+        # Frame stack update with noisy obs
         if self.n_stack == 1:
             obs = single
         else:
-            # initialize stack if empty (e.g., first step after reset)
             if len(self.obs_stack) == 0:
+                # If something cleared it, repopulate
                 for _ in range(self.n_stack):
                     self.obs_stack.append(single.copy())
             else:
@@ -293,10 +391,10 @@ class CrazyFlieEnv(gym.Env):
       
       
         ##from the 13d obs array retrieve any relevant obs variables
-        x, y, z = float(single[0]), float(single[1]), float(single[2])
-        qw, qx, qy, qz = single[3:7]
-        vx, vy, vz = single[7:10]
-        wx, wy, wz = single[10:13]
+        x, y, z = float(single_clean[0]), float(single_clean[1]), float(single_clean[2])
+        qw, qx, qy, qz = single_clean[3:7]
+        vx, vy, vz = single_clean[7:10]
+        wx, wy, wz = single_clean[10:13]
         height_err = abs(z - self.target_z) ##height_err is how far we are from target height
         above = z - self.target_z ##above -- how far above the target are we?If z<target then we will be negative values above target(since above is +)
         
@@ -503,36 +601,3 @@ class CrazyFlieEnv(gym.Env):
         stacked = np.concatenate(list(self.obs_stack), axis=0).astype(np.float32)
         return stacked
 
-
-    # ---------- Rendering (rgb_array) ----------
-
-    # def _apply_follow_camera(self):
-    #     if self._renderer is None or self._follow_bid is None:
-    #         return
-    #     target = self.data.xpos[self._follow_bid].copy()
-    #     cam = self._renderer.cam
-    #     cam.type = mj.mjtCamera.mjCAMERA_FREE
-    #     cam.lookat[:] = target
-    #     cam.distance = self._cam_distance
-    #     cam.elevation = self._cam_elevation
-    #     cam.azimuth = self._cam_azimuth
-
-    # def render(self) -> Optional[np.ndarray]:
-    #     if self.render_mode == "rgb_array":
-    #         if self._renderer is None:
-    #             self._renderer = mj.Renderer(self.model, height=self._height, width=self._width)
-    #         if self._camera_name is not None:
-    #             self._renderer.update_scene(self.data, camera=self._camera_name)
-    #         else:
-    #             self._apply_follow_camera()
-    #             self._renderer.update_scene(self.data)
-    #         img = self._renderer.render()
-    #         return np.clip(img * 255.0, 0, 255).astype(np.uint8)
-    #     elif self.render_mode == "human":
-    #         return None
-    #     return None
-
-    # def close(self):
-    #     if self._renderer is not None:
-    #         self._renderer.close()
-    #         self._renderer = None

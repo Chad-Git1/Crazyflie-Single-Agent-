@@ -11,19 +11,34 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from CrazyFlieEnvComplex import CrazyFlieEnv
 
 ##factory function, a function that returns another function
-def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank:int = 0):##Sb3 expects a function that returns a function to return the environment wrapped with the monitor
+def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank: int = 0):
     def _f():
-
-        env = CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps, n_stack=4,hover_required_steps=600)
+        env = CrazyFlieEnv(
+            xml_path=xml_path,
+            target_z=target_z,
+            max_steps=max_steps,
+            n_stack=4,
+            hover_required_steps=600,
+            # <-- add domain randomization params here
+            **DR_PARAMS,
+        )
         env = Monitor(env)
         env.reset(seed=rank)
-        # env.reset(seed=rank+base_seed)
-        # env.action_space.seed(base_seed + 10_000 + rank)
         return env
     return _f
 
 
+
 if __name__ == "__main__":
+    # Domain randomization settings used for TRAINING
+    DR_PARAMS = dict(
+        obs_noise_std=0.0,
+        obs_bias_std=0.0,
+        action_noise_std=0.0,
+        motor_scale_std=0.0,  # ±5% thrust gain
+        frame_skip=10,
+        frame_skip_jitter=0,   # frame skip in [8, 12]
+    )
     here = os.path.dirname(__file__)
 
     # Point to your MuJoCo scene.xml (adjust path to your repo layout)
@@ -41,6 +56,8 @@ if __name__ == "__main__":
     MAX_STEPS = 1500
     N_ENVS = 8  # or 4, 16, etc.
     SEEDS = [0]
+
+    
     
   
     env_fns = [make_env(xml_path, TARGET_Z, MAX_STEPS, rank=i) for i in range(N_ENVS)]
@@ -64,11 +81,12 @@ if __name__ == "__main__":
         tensorboard_log=logs_dir,##logs tensorboard log files into the logs director
         verbose=1##prints training progress into the console(1 is minimal)
         
+        
     )
     
     ##train the model by running it for a total_timsetep amount of simulation steps, each step is a single env.step() call
     ##total_timsteps/episode_steps = (100,000)/1500=66 episodesroughly
-    model.learn(total_timesteps=1000000, progress_bar=True)
+    model.learn(total_timesteps=1500000, progress_bar=True)
 
     model.save(os.path.join(models_dir, "complex.zip"))##saved the train model
     venv.save(os.path.join(models_dir, "vecnormalize.pkl"))##also saved normalization stats
