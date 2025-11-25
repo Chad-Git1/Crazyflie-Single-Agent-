@@ -45,16 +45,16 @@ if __name__ == "__main__":
     ##xml path for the crazyflydrone
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##directory to save the models from training
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2"))
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexMain"))
     ##where to save the logging for tensorboard
-    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplex2"))
+    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplexMain"))
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
     ##environment paramater constants
     TARGET_Z = 1
     MAX_STEPS = 1500
-    N_ENVS = 8  # or 4, 16, etc.
+    N_ENVS = 24  # or 4, 16, etc.
     SEEDS = [0]
 
     
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     
     ##train the model by running it for a total_timsetep amount of simulation steps, each step is a single env.step() call
     ##total_timsteps/episode_steps = (100,000)/1500=66 episodesroughly
-    model.learn(total_timesteps=1500000, progress_bar=True)
+    model.learn(total_timesteps=2000000, progress_bar=True)
 
     model.save(os.path.join(models_dir, "complex.zip"))##saved the train model
     venv.save(os.path.join(models_dir, "vecnormalize.pkl"))##also saved normalization stats

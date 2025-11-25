@@ -1,4 +1,4 @@
-# src/train_thrust_ppo_dr.py
+
 import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
@@ -6,8 +6,6 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from CrazyFlieEnvComplex import CrazyFlieEnv
 
-
-# factory stays the same – still uses DR_PARAMS
 def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank: int = 0):
     def _f():
         env = CrazyFlieEnv(
@@ -16,7 +14,7 @@ def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank: int = 
             max_steps=max_steps,
             n_stack=4,
             hover_required_steps=600,
-            **DR_PARAMS,  # will now be NON-ZERO noise
+            **DR_PARAMS,  
         )
         env = Monitor(env)
         env.reset(seed=rank)
@@ -27,34 +25,37 @@ def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank: int = 
 if __name__ == "__main__":
     here = os.path.dirname(__file__)
 
-    # ---------- 1) Set STRONGER DR params for Stage 2 ----------
     DR_PARAMS = dict(
-        obs_noise_std=0.007,
-        obs_bias_std=0.01,
-        action_noise_std=0.008,
-        motor_scale_std=0.05,  # ±2% thrust gain
-        frame_skip=10,
-        frame_skip_jitter=2,   # frame skip in [9, 11]
+   
+    obs_noise_std=0.03,      # base scale for white noise
+    obs_bias_std=0.02,       # episode-level offsets
+    action_noise_std=0.01,   # very small jitter
+    motor_scale_std=0.03,    # ±3% gain
+    frame_skip=10,
+    frame_skip_jitter=1,     # [9, 11]
+
+
     )
+
 
     # MuJoCo XML path
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
 
-    # ---------- 2) Paths to OLD (Stage 1) model + vecnorm ----------
-    base_models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2"))
+  ###loading pre-trained model from TrainComplex.py 
+    base_models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexMain"))
     old_model_path = os.path.join(base_models_dir, "complex.zip")
     old_vecnorm_path = os.path.join(base_models_dir, "vecnormalize.pkl")
 
-    # ---------- 3) NEW paths to save Stage 2 noisy model ----------
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2_DR"))
-    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplex2_DR"))
+  ##where we save our new model with domain randomization
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexMain_DR"))
+    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplexMain_DR"))
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
     # Env constants
     TARGET_Z = 1.0
     MAX_STEPS = 1500
-    N_ENVS = 8
+    N_ENVS = 24
 
     # ---------- 4) Build noisy envs ----------
     env_fns = [make_env(xml_path, TARGET_Z, MAX_STEPS, rank=i) for i in range(N_ENVS)]
@@ -69,13 +70,14 @@ if __name__ == "__main__":
     # ---------- 6) Load OLD PPO model, attach NEW noisy env ----------
     model = PPO.load(old_model_path, env=venv)
 
-
+    
+    model.learning_rate = 5e-4  
 
     # ---------- 7) Continue training with noise ----------
     model.learn(
-        total_timesteps=5_000_000,   # extra steps for fine-tuning
+        total_timesteps=4_000_000,   # extra steps for fine-tuning
         progress_bar=True,
-        reset_num_timesteps=False,   # <--- IMPORTANT: continue timestep count
+        reset_num_timesteps=False,   
     )
 
     # ---------- 8) Save new noisy-model + updated vecnorm ----------

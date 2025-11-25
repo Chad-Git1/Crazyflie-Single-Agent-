@@ -57,6 +57,10 @@ class CrazyFlieEnv(gym.Env):
         motor_scale_std: float = 0.0,     # per-episode thrust gain error
         frame_skip: int = 10,             # base frame skip (was 10)
         frame_skip_jitter: int = 0,       # +/- jitter in frame skip per episode
+        auto_landing: bool = False,
+        landing_descent_rate: float = 0.4,   # m/s target descent
+        landing_upright_gain: float = 4.0,   # P gain on qx,qy
+        landing_rate_gain: float = 0.5,      # D gain on wx,wy
     ):
         
         """ Initilaization function to first create the CrazyFlyEnv
@@ -98,13 +102,19 @@ class CrazyFlieEnv(gym.Env):
         self.frame_skip_jitter = int(frame_skip_jitter)
         self.frame_skip = self.frame_skip_base  # will be randomized in reset()
 
-        # Per-episode random variables (filled in reset)
+        
+
+        # --- Sensor / dynamics randomization state ---
         self.obs_bias = np.zeros(self.obs_dim_single, dtype=np.float32)
         self.motor_scale = 1.0
 
+        # NEW: per-episode sensor gain (e.g. z scale error)
+        self.pos_gain = np.ones(3, dtype=np.float32)    # x,y,z gains
+        self.vel_gain = np.ones(3, dtype=np.float32)    # vx,vy,vz gains
 
-        #remove maybe? 
-        self.mode = "thrust_plus_moments"## in the mode where the control is the thrust + x,y,z moments
+        # NEW: slowly drifting bias (random walk)
+        self.bias_drift = np.zeros(self.obs_dim_single, dtype=np.float32)
+
 
 
         tmin, tmax = 0.0, 0.35 ##define thrust minimum and maximum values according to mj model (0,0.35)
@@ -178,66 +188,177 @@ class CrazyFlieEnv(gym.Env):
         self.ground_steps = 0
         self.prev_dz = 0.0
 
+        # --- Safety thresholds for sim2real guardrails ---
+        # If these are exceeded while in HOVER mode, we hand over to the hard-coded landing.
+        self.safety_max_tilt_rad = np.deg2rad(35.0)  # ~35 deg from upright
+        self.safety_max_abs_vz = 5.0                 # m/s vertical speed limit
+        self.safety_radius = 0.8                     # same as lateral bound radius
+
+        # ───────────────────────────────────
+        # New landing state machine (env-side)
+        # ───────────────────────────────────
+        self.phase = "HOVER"  # "HOVER" or "LANDING"
+        self.auto_landing = auto_landing
+
+        # Landing controller internal state
+        self.landing_step_idx = 0
+        self.landing_beta = 0.0          # blend between policy thrust and landing thrust
+        self.landing_mode = "DESCEND"    # or "CATCH"
+        self.landing_catch_steps = 0
+
+        # Landing parameters (mirroring the external controller logic)
+        self.landing_max_radius = 0.8    # must not leave this lateral radius
+        self.landing_safe_radius = 0.4   # where we want to stay during landing
+        self.landing_tilt_abort_deg = 25.0  # tilt > this -> go to CATCH mode
+        self.landing_tilt_ok_deg = 10.0     # considered upright
+        self.landing_beta_ramp_steps = 200  # steps to ramp beta 0→1
+        self.landing_max_steps = 800        # safety cap on landing duration
+
+        # Vertical profile for landing (m/s)
+        self.landing_vz_fast = -0.30   # high up
+        self.landing_vz_med  = -0.20
+        self.landing_vz_mid  = -0.15
+        self.landing_vz_slow = -0.10   # near ground
+
+        # Vertical speed gain
+        self.landing_k_vz = 0.4
+
+     
+
+
 
 
     def _apply_obs_noise(self, single: np.ndarray) -> np.ndarray:
-            """
-            Take a clean single-frame observation and add:
-            - per-episode bias (obs_bias)
-            - per-step Gaussian noise
-            """
-            noisy = single.astype(np.float32).copy()
+        """
+        Apply realistic measurement model to a clean 13D state:
+        - true state: [pos(3), quat(4), linv(3), angv(3)]
+        - sensor gain + bias on pos & velocities
+        - small white noise
+        - slowly drifting bias (random walk)
+        - keep quaternion unit-normalized
+        """
+        rng = getattr(self, "np_random", np.random)
+        s = single.astype(np.float32).copy()
 
-            # Bias (same every step this episode)
-            if self.obs_bias_std > 0.0:
-                noisy += self.obs_bias
+        # Unpack
+        pos = s[0:3]
+        quat = s[3:7]
+        linv = s[7:10]
+        angv = s[10:13]
 
-            # Per-step Gaussian noise
-            if self.obs_noise_std > 0.0:
-                rng = getattr(self, "np_random", np.random)
-                noisy += rng.normal(
-                    loc=0.0,
-                    scale=self.obs_noise_std,
-                    size=single.shape,
-                ).astype(np.float32)
+        # 1) Per-episode gains (scale errors)
+        pos_meas = self.pos_gain * pos
+        vel_meas = self.vel_gain * linv
 
-            return noisy
+        # 2) Per-episode bias
+        pos_meas += self.obs_bias[0:3]
+        vel_meas += self.obs_bias[7:10]
+        angv_meas = angv + self.obs_bias[10:13]
+
+        # 3) Slowly drifting bias (random walk, small step)
+        if self.obs_noise_std > 0.0:
+            drift_step = rng.normal(
+                0.0,
+                self.obs_noise_std * 0.01,  # small step
+                size=self.obs_dim_single,
+            ).astype(np.float32)
+            self.bias_drift += drift_step
+        else:
+            self.bias_drift[:] = 0.0
+
+        pos_meas += self.bias_drift[0:3]
+        vel_meas += self.bias_drift[7:10]
+        angv_meas += self.bias_drift[10:13]
+
+        # 4) Per-step white noise (channel-specific)
+        if self.obs_noise_std > 0.0:
+            # positions: bigger noise on z than x,y
+            pos_meas[0:2] += rng.normal(
+                0.0, self.obs_noise_std * 0.5, size=2
+            ).astype(np.float32)
+            pos_meas[2] += rng.normal(0.0, self.obs_noise_std * 1.0)  # <--- FIXED
+
+            # linear velocities
+            vel_meas += rng.normal(
+                0.0, self.obs_noise_std * 0.7, size=3
+            ).astype(np.float32)
+
+            # angular velocities: slightly smaller
+            angv_meas += rng.normal(
+                0.0, self.obs_noise_std * 0.4, size=3
+            ).astype(np.float32)
+
+        # 5) Quaternion: keep it clean or add tiny noise + renorm
+        quat_meas = quat.copy()
+        # optional tiny attitude error:
+        # quat_meas += rng.normal(0.0, self.obs_noise_std * 0.1, size=4).astype(np.float32)
+        norm_q = np.linalg.norm(quat_meas)
+        if norm_q > 1e-6:
+            quat_meas /= norm_q
+
+        # 6) Repack
+        noisy = np.concatenate([pos_meas, quat_meas, vel_meas, angv_meas]).astype(np.float32)
+
+        # 7) OPTIONAL: rare outlier / glitch
+        if self.obs_noise_std > 0.0 and rng.random() < 1e-3:
+            glitch = rng.normal(0.0, self.obs_noise_std * 10.0, size=3).astype(np.float32)
+            noisy[0:3] += glitch
+
+        return noisy
+
 
     def _sample_episode_randomization(self):
-            """
-            Sample all per-episode random factors:
-            - observation bias
-            - motor thrust gain
-            - frame_skip jitter
-            """
-            rng = getattr(self, "np_random", np.random)
+        """
+        Sample all per-episode random factors:
+        - sensor bias (pos + velocities)
+        - sensor gain (pos/vel scale factors)
+        - motor thrust gain
+        - frame_skip jitter
+        """
+        rng = getattr(self, "np_random", np.random)
 
-            # Observation bias (e.g., altimeter offset)
-            if self.obs_bias_std > 0.0:
-                self.obs_bias = rng.normal(
-                    loc=0.0,
-                    scale=self.obs_bias_std,
-                    size=self.obs_dim_single,
-                ).astype(np.float32)
-            else:
-                self.obs_bias[:] = 0.0
+        # 1) Observation bias: like altimeter + IMU offset
+        if self.obs_bias_std > 0.0:
+            # bias only on pos (0:3) and velocities (7:13)
+            bias = rng.normal(
+                loc=0.0,
+                scale=self.obs_bias_std,
+                size=self.obs_dim_single,
+            ).astype(np.float32)
+            # you can zero out quaternion bias explicitly if you want
+            bias[3:7] = 0.0
+            self.obs_bias = bias
+        else:
+            self.obs_bias[:] = 0.0
 
-            # Motor thrust gain error (motors slightly stronger/weaker)
-            if self.motor_scale_std > 0.0:
-                self.motor_scale = float(1.0 + rng.normal(0.0, self.motor_scale_std))
-            else:
-                self.motor_scale = 1.0
+        # 2) Sensor gain: per-axis scale error
+        # e.g. ±3% on z, ±2% on x,y, ±5% on velocities
+        self.pos_gain[:] = 1.0
+        self.vel_gain[:] = 1.0
+        if self.motor_scale_std > 0.0:
+            self.pos_gain[0:2] = 1.0 + rng.normal(0.0, 0.02, size=2)     # x,y
+            self.pos_gain[2]   = 1.0 + rng.normal(0.0, 0.03)             # z
+            self.vel_gain[:]   = 1.0 + rng.normal(0.0, 0.05, size=3)     # vx,vy,vz
 
-            # Frame skip jitter (control frequency variation)
-            if self.frame_skip_jitter > 0:
-                # inclusive low, exclusive high – like randint
-                jitter = int(rng.integers(
-                    -self.frame_skip_jitter,
-                    self.frame_skip_jitter + 1
-                ))
-                self.frame_skip = max(1, self.frame_skip_base + jitter)
-            else:
-                self.frame_skip = self.frame_skip_base
+        # 3) Motor thrust gain error (episode-level)
+        if self.motor_scale_std > 0.0:
+            self.motor_scale = float(1.0 + rng.normal(0.0, self.motor_scale_std))
+        else:
+            self.motor_scale = 1.0
+
+        # 4) Frame skip jitter (control frequency variation)
+        if self.frame_skip_jitter > 0:
+            jitter = int(rng.integers(
+                -self.frame_skip_jitter,
+                self.frame_skip_jitter + 1
+            ))
+            self.frame_skip = max(1, self.frame_skip_base + jitter)
+        else:
+            self.frame_skip = self.frame_skip_base
+
+        # 5) Reset drift state (random walk starts from 0)
+        self.bias_drift[:] = 0.0
+
 
 
     
@@ -248,6 +369,9 @@ class CrazyFlieEnv(gym.Env):
         super().reset(seed=seed)
         ##reset the mujocco data
         mj.mj_resetData(self.model, self.data)
+
+       
+
 
         ##mujocco data has 3 parts
         ##data.qpos = (x,y,z)+(w,x,y,z) position and quaternion pos
@@ -269,6 +393,16 @@ class CrazyFlieEnv(gym.Env):
         self.step_idx = 0
         self.ground_steps = 0
 
+                # Reset landing state machine
+        self.phase = "HOVER"
+        self.landing_step_idx = 0
+        self.landing_beta = 0.0
+        self.landing_mode = "DESCEND"
+        self.landing_catch_steps = 0
+        # In case previous episode ended in landing
+        self._end_noise_free_landing()
+
+
         # --- sample per-episode randomization (bias, motor scale, frame_skip) ---
         self._sample_episode_randomization()
 
@@ -286,6 +420,10 @@ class CrazyFlieEnv(gym.Env):
             obs = np.concatenate(list(self.obs_stack), axis=0).astype(np.float32)
 
         return obs, {}
+    
+    
+
+
 
 
     def _apply_thrust(self, u_scalar: float,m_vec:np.ndarray): ####this applies the filtering to the thrust, u_scalar is the thrust aciton
@@ -334,13 +472,18 @@ class CrazyFlieEnv(gym.Env):
         # store last applied moments for next step
         self.last_moments = m_clipped.copy()
 
-    def step(self, action: np.ndarray): #
-        ##reward functionality
-        # scalar thrust request
-        ##requested thrust is clipped first to be in the action space range
-        # u_req = float(np.clip(np.asarray(action).squeeze(), self.action_space.low[0], self.action_space.high[0]))
-        # Convert to array and sanity-check shape
+    def step(self, action: np.ndarray):
+        # Convert action to proper array/shape
+
+
         a = np.asarray(action, dtype=np.float32).squeeze()
+
+          # ── Landing phase override ───────────────────────
+        if self.auto_landing and (self.phase == "LANDING"):
+            # In landing phase: ignore normal hover reward logic and
+            # run the landing controller instead.
+            return self._step_landing(action)
+        
         if a.shape == ():
             raise ValueError("Action must be 4D: [thrust, mx, my, mz]")
 
@@ -358,7 +501,6 @@ class CrazyFlieEnv(gym.Env):
 
         # Apply per-episode motor scaling on thrust
         u_req = float(u_req * self.motor_scale)
-        # Re-clip thrust after scaling
         u_req = float(np.clip(u_req, self.action_space.low[0], self.action_space.high[0]))
 
         # Send to actuator shaping (low-pass + slew) and MuJoCo
@@ -368,8 +510,8 @@ class CrazyFlieEnv(gym.Env):
         for _ in range(self.frame_skip):
             mj.mj_step(self.model, self.data)
         self.step_idx += 1
-      
-         # Clean single observation from MuJoCo
+
+        # Clean single observation from MuJoCo
         single_clean = self._get_single_obs()
 
         # Noisy obs for the agent
@@ -380,79 +522,57 @@ class CrazyFlieEnv(gym.Env):
             obs = single
         else:
             if len(self.obs_stack) == 0:
-                # If something cleared it, repopulate
                 for _ in range(self.n_stack):
                     self.obs_stack.append(single.copy())
             else:
                 self.obs_stack.append(single.copy())
             obs = np.concatenate(list(self.obs_stack), axis=0).astype(np.float32)
 
-
-      
-      
-        ##from the 13d obs array retrieve any relevant obs variables
+        # Unpack state from clean obs for reward / safety
         x, y, z = float(single_clean[0]), float(single_clean[1]), float(single_clean[2])
         qw, qx, qy, qz = single_clean[3:7]
         vx, vy, vz = single_clean[7:10]
         wx, wy, wz = single_clean[10:13]
-        height_err = abs(z - self.target_z) ##height_err is how far we are from target height
-        above = z - self.target_z ##above -- how far above the target are we?If z<target then we will be negative values above target(since above is +)
-        
-        
+
         # update smoothness trackers
-        self.du_hist.append(self.last_du)##add to the histories the vertical velocity and last_du which is difference in thrust between currently applied thrust and last applied thrust
+        self.du_hist.append(self.last_du)
         self.vz_hist.append(abs(vz))
 
-        
-
-        ## the final reward is calculated like reward = (closeness to target) + (moving in direction of target) - (go too fast near target) -
-        ## (be above target)-(tilt/wander)-(be jerky)-(waste energy)
-        
-
-               # ---------- Reward ----------
-       
-
-        ##ground stall bookkeeping
-        # Count how long we stay basically on the floor and not moving up, penalize every step on the ground
-        ground_penalty =0
+        # ---------- Reward ----------
+        ground_penalty = 0.0
         if (z < 0.015) and (abs(vz) < 0.05):
-            
             self.ground_steps += 1
-            ground_penalty-=0.5
+            ground_penalty -= 0.5
         else:
-            # As soon as we get off the ground or move, reset
             self.ground_steps = 0
-          
 
-        ## tilt angle from quaternion (roll/pitch, ignore yaw), how far you are from being upright
+        # Tilt angle from quaternion (roll/pitch, ignore yaw)
         tilt_sin = np.sqrt(qx**2 + qy**2)
         tilt_sin = np.clip(tilt_sin, 0.0, 1.0)
-        tilt_angle = 2.0 * np.arcsin(tilt_sin)  # radians, 0 = upright
+        tilt_angle = 2.0 * np.arcsin(tilt_sin)
 
-        ## Height error and relative error w.r.t. target_z
-        ##
-        dz = z - self.target_z                    # [m]
-        h_scale = max(self.target_z, 1e-3)        # avoid divide-by-zero
-        dz_rel = dz / h_scale                     # dimensionless
+        dz = z - self.target_z
+        h_scale = max(self.target_z, 1e-3)
+        dz_rel = dz / h_scale
 
-        # 1) Height tracking: quadratic well around target_z (relative)
+        # 1) Height tracking
         k_z = 2.0
         r_z = -k_z * (dz_rel ** 2)
 
-        # 2) Progress shaping in height (relative error improvement)
+        # 2) Progress shaping
         prev_err_rel = abs(self.prev_dz) / h_scale
         curr_err_rel = abs(dz) / h_scale
         k_prog = 3.0
         r_progress = k_prog * np.clip(prev_err_rel - curr_err_rel, -0.2, 0.2)
-        self.prev_dz = dz  # update for next step
+        self.prev_dz = dz
 
-        # 3) Vertical velocity penalty, stronger when near target (relative "near")
-        near = np.exp(- (dz_rel / 0.1) ** 2)   # ~10% of target height
+        # 3) Vertical velocity penalty (stronger near target)
+        near = np.exp(- (dz_rel / 0.1) ** 2)
         k_vz_far  = 0.1
         k_vz_near = 2.0
         r_vz = -(k_vz_far + k_vz_near * near) * (vz ** 2)
 
-        # 4) Lateral position & velocity: stay near (0,0) and don't drift sideways
+        # 4) Lateral position & velocity
         k_xy  = 1.0
         k_vxy = 0.2
         r_xy   = -k_xy  * (x**2 + y**2)
@@ -460,44 +580,39 @@ class CrazyFlieEnv(gym.Env):
 
         # 5) Uprightness & angular rates
         k_tilt      = 2.0
-        k_omega_rp  = 0.05   # roll + pitch rates
-        k_omega_y   = 0.01   # yaw rate
+        k_omega_rp  = 0.05
+        k_omega_y   = 0.01
         r_tilt  = -k_tilt * (tilt_angle ** 2)
         r_omega = -k_omega_rp * (wx**2 + wy**2) - k_omega_y * (wz**2)
 
-        # Upright bonus: extra positive shaping when close to upright
-        upright_scale = 0.5                     # max bonus per step
-        upright_width = np.deg2rad(8.0)         # around ±8 degrees
+        upright_scale = 0.5
+        upright_width = np.deg2rad(8.0)
         upright_bonus = upright_scale * np.exp(- (tilt_angle / upright_width) ** 2)
 
-        # 6) Control effort & smoothness (torques + thrust changes)
-        m_mag2 = float(np.dot(self.last_moments, self.last_moments))  # ||m||^2
+        # 6) Control effort & smoothness
+        m_mag2 = float(np.dot(self.last_moments, self.last_moments))
         k_moment_abs   = 0.02
         k_moment_jump  = 0.05
         k_thrust_jump  = 0.2
-
         r_moment_abs    = -k_moment_abs  * m_mag2
         r_moment_jump   = -k_moment_jump * self.last_dm
         r_thrust_smooth = -k_thrust_jump * self.last_du
 
-        # 7) Takeoff shaping (relative climb toward target)
+        # 7) Takeoff shaping
         r_takeoff = 0.0
         if z < 0.02:
-            # sitting on the ground is slightly bad
             r_takeoff -= 0.05
         elif z < self.target_z - 0.10:
-            # reward being some fraction of the way up to target
             frac = np.clip(z / h_scale, 0.0, 1.0)
             r_takeoff += 0.1 * frac
 
-        # 8) Soft ceiling shaping: discourage overshooting far above target
+        # 8) Soft ceiling shaping
         if z > self.soft_ceiling:
             k_ceiling = 5.0
             r_ceiling = -k_ceiling * (z - self.soft_ceiling) ** 2
         else:
             r_ceiling = 0.0
 
-        # Combine all reward terms
         reward = (
             r_z + r_progress +
             r_vz +
@@ -505,70 +620,87 @@ class CrazyFlieEnv(gym.Env):
             r_tilt + r_omega +
             r_moment_abs + r_moment_jump + r_thrust_smooth +
             r_takeoff + r_ceiling +
-            upright_bonus
-            +ground_penalty
+            upright_bonus +
+            ground_penalty
         )
 
-        # -Hover band bonus (relative to target height) 
+        # ---------- Hover-band success ----------
         tilt_ok = tilt_angle < np.deg2rad(10.0)
-        dz_band_rel = self.band / h_scale   # band in "fraction of target height"
+        dz_band_rel = self.band / h_scale
         in_band = (abs(dz_rel) <= dz_band_rel) and (abs(vz) < 0.05) and tilt_ok
 
         if in_band:
             self.hover_count += 1
-            reward += 1.0    # per-step bonus for really good hover
+            reward += 1.0
+            if self.hover_count >= self.hover_required:
+                mean_vz = float(np.mean(self.vz_hist)) if len(self.vz_hist) else 999.0
+                mean_du = float(np.mean(self.du_hist)) if len(self.du_hist) else 999.0
+                if mean_vz < 0.04 and mean_du < 0.010:
+                    reward += 50.0
+                    info = {
+                        "success": True,
+                        "hover_steps": self.hover_count,
+                        "mean_vz": mean_vz,
+                        "mean_du": mean_du,
+                    }
+                    if self.auto_landing:
+                        # Start landing instead of terminating
+                        self._start_landing_phase("success")
+                        info.update({"phase": "landing_start"})
+                        return obs, reward, False, False, info
+                else:
+                    return obs, reward, True, False, info
         else:
             self.hover_count = 0
 
-        # Long, smooth hover -> early success
-        if self.hover_count >= self.hover_required:
-            mean_vz = float(np.mean(self.vz_hist)) if len(self.vz_hist) else 999.0
-            mean_du = float(np.mean(self.du_hist)) if len(self.du_hist) else 999.0
-            if mean_vz < 0.04 and mean_du < 0.010:
-                reward += 50.0
-                return obs, reward, True, False, {
-                    "success": True,
-                    "hover_steps": self.hover_count,
-                    "mean_vz": mean_vz,
-                    "mean_du": mean_du,
-                }
-
-
-
+        # ---------- Hard crashes / terminations ----------
         if self.ground_steps >= self.max_ground_steps:
-            reward -= 100  # or 50.0
-            return obs, reward, True, False, {
+            reward -= 100.0
+            info = {
                 "crash": True,
                 "reason": "stalled_on_ground",
                 "ground_steps": self.ground_steps,
             }
+            return obs, reward, True, False, info
 
-
-        # Ground / NaN crash
         if z < 0.01 or np.any(np.isnan(obs)) or np.any(np.isinf(obs)):
-            reward -= 100
+            reward -= 100.0
             return obs, reward, True, False, {"crash": True, "reason": "nan_or_below_ground"}
 
-        # Flip crash
         if tilt_angle > np.deg2rad(120.0):
-            reward -= 100
+            reward -= 100.0
             return obs, reward, True, False, {"crash": True, "reason": "flipped"}
 
-        # Hard ceiling termination
         if z > self.hard_ceiling:
-            reward -= 50
+            reward -= 50.0
             return obs, reward, True, False, {"ceiling": True}
 
-        # Lateral bounds (keep around origin)
-        r_xy = np.sqrt(x**2 + y**2)
-        if r_xy > 0.8:  # 0.8m radius, not 8m
-            reward -= 50
+        r_xy_pos = np.sqrt(x**2 + y**2)
+        if r_xy_pos > 0.8:
+            reward -= 50.0
             return obs, reward, True, False, {"crash": True, "reason": "out_of_bounds"}
 
-
         terminated = False
-        truncated = self.step_idx >= self.max_steps
+        timeout = self.step_idx >= self.max_steps
+
+        if timeout:
+            info = {
+                "hover_steps": self.hover_count,
+                "timeout": True,
+            }
+            if self.auto_landing:
+                self._start_landing_phase("timeout")
+                info.update({"phase": "landing_start"})
+                return obs, reward, False, False, info
+            else:
+                truncated = True
+                return obs, reward, terminated, truncated, info
+ 
+        truncated = False
         return obs, reward, terminated, truncated, {"hover_steps": self.hover_count}
+
+
+
 
 # ---------- Helpers ----------
         
@@ -588,16 +720,248 @@ class CrazyFlieEnv(gym.Env):
         single = self._get_single_obs()
 
         if self.n_stack == 1:
-            # No stacking, just return the current frame
+          
             return single
-
-        # Initialize the stack on first call (e.g., right after reset)
         if len(self.obs_stack) == 0:
             for _ in range(self.n_stack):
                 self.obs_stack.append(single.copy())
         else:
             self.obs_stack.append(single.copy())
-
         stacked = np.concatenate(list(self.obs_stack), axis=0).astype(np.float32)
         return stacked
 
+    def get_altitude(self) -> float:
+        """Current z in world coordinates."""
+        return float(self.data.qpos[2])
+
+    def safe_ground_height(self) -> float:
+        """
+        Height below which we consider the drone 'landed' enough
+        to cut motors (tune this if needed).
+        """
+        return 0.03  # 3 cm
+
+    def landing_action(self, k: int, total_steps: int) -> np.ndarray:
+        """
+        Thrust-only landing with vertical-speed tracking.
+
+        - No torques (mx=my=mz=0) -> we don't inject tilt.
+        - Try to follow a gentle desired descent speed v_des(z).
+        - Keep thrust bounded away from 0 so we don't free-fall.
+        """
+        z  = float(self.data.qpos[2])
+        vz = float(self.data.qvel[2])
+
+        h = z - self.safe_ground_height()
+        if h < 0.0:
+            h = 0.0
+
+        if h > 0.6:
+            v_des = -0.30
+        elif h > 0.3:
+            v_des = -0.22
+        elif h > 0.1:
+            v_des = -0.15
+        else:
+            v_des = -0.08
+        k_v = 0.4
+        err_v = vz - v_des
+        u = self.HOVER_THRUST - k_v * err_v
+
+        ### don't let landing thrust get *too* small or we'll free-fall.
+        #### This is a "floor" on thrust during landing.
+        u_min = 0.12                        
+        u_max = self.action_space.high[0]
+        u = float(np.clip(u, u_min, u_max))
+        ### Torques OFF during landing: we rely on the last policy state
+        ## to already be upright and let dynamics keep it near there.
+        return np.array([u, 0.0, 0.0, 0.0], dtype=np.float32)
+
+
+    def cut_motors(self) -> None:
+        """Immediately zero all actuators."""
+        self.u_cmd = 0.0
+        self.data.ctrl[:] = 0.0
+
+
+    def _start_landing_phase(self, reason: str):
+        """
+        Called once when the hover episode ends (success or timeout or failure)
+        and auto_landing=True. Does NOT terminate the Gym episode yet.
+        """
+        self.phase = "LANDING"
+        self.landing_step_idx = 0
+        self.landing_beta = 0.0
+        self.landing_mode = "DESCEND"
+        self.landing_catch_steps = 0
+        self._begin_noise_free_landing()
+        self.pre_landing_reason = reason
+
+    def _begin_noise_free_landing(self):
+        """
+        Temporarily disable action noise and motor scaling so the
+        landing controller is robust to training-time randomization.
+        """
+        self._landing_noise_backup = {
+            "action_noise_std": self.action_noise_std,
+            "motor_scale": self.motor_scale,
+        }
+        self.action_noise_std = 0.0
+        self.motor_scale = 1.0
+
+    def _end_noise_free_landing(self):
+        """Restore noise/randomization after landing ends."""
+        if hasattr(self, "_landing_noise_backup"):
+            self.action_noise_std = self._landing_noise_backup["action_noise_std"]
+            self.motor_scale = self._landing_noise_backup["motor_scale"]
+            del self._landing_noise_backup
+
+    def safe_ground_height(self) -> float:
+        """Height threshold that counts as 'on the ground' for landing logic."""
+        return 0.03  # 3 cm
+
+    def _tilt_and_radius(self):
+        """
+        Compute tilt angle (rad) from quaternion (roll/pitch only)
+        and lateral distance r from origin in the x-y plane.
+        """
+        x, y, z = self.data.qpos[0:3]
+        qw, qx, qy, qz = self.data.qpos[3:7]
+        tilt_sin = np.sqrt(qx * qx + qy * qy)
+        tilt_sin = np.clip(tilt_sin, 0.0, 1.0)
+        tilt_angle = 2.0 * np.arcsin(tilt_sin)  
+        r = float(np.sqrt(x * x + y * y))
+        return tilt_angle, r
+    
+    def _step_landing(self, action: np.ndarray):
+        """
+        Landing step:
+          - reuses policy torques (mx,my,mz) from the incoming action,
+          - overrides thrust by blending policy thrust with a vertical-speed
+            landing controller: u = (1-beta)*u_pol + beta*u_land,
+          - has DESCEND and CATCH sub-modes.
+
+        Returns: obs, reward, terminated, truncated, info
+        """
+        a_pol = np.asarray(action, dtype=np.float32).squeeze()
+        if a_pol.shape != (4,):
+            raise ValueError("Landing expects 4D action [thrust, mx, my, mz].")
+        u_pol = float(np.clip(
+            a_pol[0],
+            self.action_space.low[0],
+            self.action_space.high[0],
+        ))
+        m_pol = a_pol[1:4]
+        m_pol = np.clip(m_pol, -1.0, 1.0)
+        x, y, z = self.data.qpos[0:3]
+        vx, vy, vz = self.data.qvel[0:3]
+
+        tilt_angle, r = self._tilt_and_radius()
+        tilt_deg = float(np.rad2deg(tilt_angle))
+        if self.landing_step_idx == 0:
+            self.landing_beta = 0.0
+            self.landing_mode = "DESCEND"
+            self.landing_catch_steps = 0
+
+        mode = self.landing_mode
+        if (tilt_deg > self.landing_tilt_abort_deg
+                or r > self.landing_max_radius):
+            mode = "CATCH"
+            self.landing_mode = "CATCH"
+            self.landing_catch_steps = 0
+        v_des = 0.0
+        if mode == "CATCH":
+            v_des = 0.0
+            self.landing_beta = max(0.0, self.landing_beta - 0.05)
+            if (tilt_deg < self.landing_tilt_ok_deg
+                    and r < self.landing_safe_radius
+                    and abs(vx) < 0.2 and abs(vy) < 0.2):
+                self.landing_catch_steps += 1
+            else:
+                self.landing_catch_steps = 0
+
+            if self.landing_catch_steps > 50:
+                self.landing_mode = "DESCEND"
+
+        else:  
+            h = z - self.safe_ground_height()
+            if h < 0.0:
+                h = 0.0
+            if h > 0.8:
+                v_des = self.landing_vz_fast
+            elif h > 0.4:
+                v_des = self.landing_vz_med
+            elif h > 0.2:
+                v_des = self.landing_vz_mid
+            else:
+                v_des = self.landing_vz_slow
+            step_idx = self.landing_step_idx
+            self.landing_beta = min(
+                1.0,
+                step_idx / max(1, self.landing_beta_ramp_steps)
+            )
+        beta = self.landing_beta
+        err_v = vz - v_des     
+        u_land = self.HOVER_THRUST - self.landing_k_vz * err_v
+        u_min = 0.12
+        u_max = float(self.action_space.high[0])
+        u_land = float(np.clip(u_land, u_min, u_max))
+        u = (1.0 - beta) * u_pol + beta * u_land
+        u = float(np.clip(u, u_min, u_max))
+        # Apply thrust smoothing & torques using existing machinery
+        self._apply_thrust(u, m_pol)
+        for _ in range(self.frame_skip):
+            mj.mj_step(self.model, self.data)
+        self.step_idx += 1
+        self.landing_step_idx += 1
+        single_clean = self._get_single_obs()
+        single = self._apply_obs_noise(single_clean)
+
+        if self.n_stack == 1:
+            obs = single
+        else:
+            if len(self.obs_stack) == 0:
+                for _ in range(self.n_stack):
+                    self.obs_stack.append(single.copy())
+            else:
+                self.obs_stack.append(single.copy())
+            obs = np.concatenate(list(self.obs_stack), axis=0).astype(np.float32)
+
+        # ───────────── 5) Check landing completion ─────────────
+        low_enough = (z <= self.safe_ground_height())
+        slow_enough = (abs(vz) < 0.10)
+        upright_enough = (tilt_deg < 10.0)
+        inside_radius = (r < self.landing_safe_radius)
+
+        landed = low_enough and slow_enough and upright_enough and inside_radius
+        timeout = (self.landing_step_idx >= self.landing_max_steps)
+
+        if landed or timeout:
+            self._end_noise_free_landing()
+            self.phase = "HOVER"  # or "DONE"; from Gym pov we end episode
+
+        # No learning reward during landing; keep it 0
+        reward = 0.0
+        terminated = landed or timeout
+        truncated = False
+
+        info = {
+            "phase": "landing",
+            "landing_mode": self.landing_mode,
+            "landing_beta": beta,
+            "landing_landed": landed,
+            "landing_timeout": timeout,
+            "tilt_deg": tilt_deg,
+            "radius": r,
+            "vz": float(vz),
+            "pre_landing_reason": self.pre_landing_reason,
+        }
+
+        return obs, reward, terminated, truncated, info
+    
+
+
+
+    
+
+    
