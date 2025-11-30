@@ -66,7 +66,7 @@ if __name__ == "__main__":
     # Make sure it's in training mode and we keep updating stats
     venv.training = True
     venv.norm_reward = True
-
+#test
     # ---------- 6) Load OLD PPO model, attach NEW noisy env ----------
     model = PPO.load(old_model_path, env=venv)
 
