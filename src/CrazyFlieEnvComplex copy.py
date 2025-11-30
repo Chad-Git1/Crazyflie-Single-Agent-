@@ -15,16 +15,22 @@ import mujoco as mj
 ## which demands the implementaiton of __init__, step(action), reset functions
 class CrazyFlieEnv(gym.Env):
     """
-       Reward:
+    Thrust-only Crazyflie hover task (MuJoCo), with anti-overshoot shaping:
+      • Action: scalar thrust u in [tmin, tmax]
+      • Autodetects actuators:
+          - 4 per-motor: sets all motors = u
+          - [thrust, mx, my, mz]: sets thrust=u, moments=0
+      • Smoothing: slew-rate + low-pass on thrust
+      • Reward:
           - closeness to target (bounded)
           - **directional progress**: (target_z - z) * vz  -> only rewards moving TOWARD target
           - strong penalty for being/staying ABOVE target
           - vertical-speed penalty near target
           - gentle tilt/lateral + thrust-jump penalties
-       Safety:
+      • Safety:
           - soft ceiling above target
           - hard ceiling termination
-      Early success after smooth hover for K steps
+      • Early success after smooth hover for K steps
     """
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}## the metadata here is just for rendering info 
 
@@ -55,10 +61,6 @@ class CrazyFlieEnv(gym.Env):
         landing_descent_rate: float = 0.4,   # m/s target descent
         landing_upright_gain: float = 4.0,   # P gain on qx,qy
         landing_rate_gain: float = 0.5,      # D gain on wx,wy
-         start_xy_range: float = 0.0,       # meters, +/- in x and y (0 = no randomization)
-        start_z_min: float = 0.01,         # meters
-        start_z_max: float = 0.01,         # meters
-          random_start: bool = True
     ):
         
         """ Initilaization function to first create the CrazyFlyEnv
@@ -72,7 +74,7 @@ class CrazyFlieEnv(gym.Env):
         thrust_slew_per_step: float -- represents the maximum change allowed in the thrust value per step to prevent going from 0.1-0.3 in one go
         hover_band:float -- the band defining how close the drone needs to be to it's target value to be counted as a successful hover( +-hover_band)
         hover_required_steps:int -- the number of steps required for the drone to be within the hover band to count as a success
-        smooth_window : int -- number of steps for how long the creation of the history will be for the environemnt to keep track of(60 is 1 second)
+        smooth_window : int -- number of steps for how long the creation of the history will be(60 is 1 second)
         Return: return_description
         """
         
@@ -86,18 +88,11 @@ class CrazyFlieEnv(gym.Env):
         ##intialize env properties for the target height and max steps
         self.target_z = float(target_z)
         self.max_steps = int(max_steps)
-        ##randomization of x,y,z variables for starting position
-        self.random_start = random_start
-        self.start_xy_range = float(start_xy_range)
-        self.start_z_min = float(start_z_min)
-        self.start_z_max = float(start_z_max)
-        self.spawn_xy = np.zeros(2, dtype=np.float64)  # [x0, y0]
 
         ######Frame Stack#######
         self.n_stack = int(n_stack)   ## how many past frames to stack, frame stacking is for passing an array of observations
         self.obs_dim_single = 13 ##defining a single framed observation as 13 dimensions
-       
-        #### Domain randomization initializaiton
+        #### Domain randomizations
         self.obs_noise_std = float(obs_noise_std)
         self.obs_bias_std = float(obs_bias_std)
         self.action_noise_std = float(action_noise_std)
@@ -107,15 +102,17 @@ class CrazyFlieEnv(gym.Env):
         self.frame_skip_jitter = int(frame_skip_jitter)
         self.frame_skip = self.frame_skip_base  # will be randomized in reset()
 
+        
+
         # --- Sensor / dynamics randomization state ---
         self.obs_bias = np.zeros(self.obs_dim_single, dtype=np.float32)
         self.motor_scale = 1.0
 
-        # per-episode sensor gain (e.g. z scale error)
+        # NEW: per-episode sensor gain (e.g. z scale error)
         self.pos_gain = np.ones(3, dtype=np.float32)    # x,y,z gains
         self.vel_gain = np.ones(3, dtype=np.float32)    # vx,vy,vz gains
 
-        # slowly drifting bias (random walk)
+        # NEW: slowly drifting bias (random walk)
         self.bias_drift = np.zeros(self.obs_dim_single, dtype=np.float32)
 
 
@@ -146,7 +143,7 @@ class CrazyFlieEnv(gym.Env):
         # observation: 13D [pos3, quat4, linv3, angv3]
         # [x,y,z,  qw,qx,qy,qz,  vx,vy,vz,  wx,wy,wz]
 
-        self.obs_stack = deque(maxlen=self.n_stack)##  create datastructure to hold the observations with length of the n_stack
+        self.obs_stack = deque(maxlen=self.n_stack)## NEW create datastructure to hold the observations with length of the n_stack
     
 
         # Hover prior
@@ -197,6 +194,9 @@ class CrazyFlieEnv(gym.Env):
         self.safety_max_abs_vz = 5.0                 # m/s vertical speed limit
         self.safety_radius = 0.8                     # same as lateral bound radius
 
+        # ───────────────────────────────────
+        # New landing state machine (env-side)
+        # ───────────────────────────────────
         self.phase = "HOVER"  # "HOVER" or "LANDING"
         self.auto_landing = auto_landing
 
@@ -299,7 +299,7 @@ class CrazyFlieEnv(gym.Env):
         # 6) Repack
         noisy = np.concatenate([pos_meas, quat_meas, vel_meas, angv_meas]).astype(np.float32)
 
-       
+        # 7) OPTIONAL: rare outlier / glitch
         if self.obs_noise_std > 0.0 and rng.random() < 1e-3:
             glitch = rng.normal(0.0, self.obs_noise_std * 10.0, size=3).astype(np.float32)
             noisy[0:3] += glitch
@@ -379,43 +379,13 @@ class CrazyFlieEnv(gym.Env):
         ##reset each to base values so 0 for all of them
         ##quaternion position means drone is straight up with no rotation represented by the identity matrix (1,0,0,0)
         #
-            
-        rng = getattr(self, "np_random", np.random)
-
-        if (self.start_xy_range > 0.0) or (self.start_z_max > self.start_z_min):
-           
-            x0 = float(rng.uniform(-self.start_xy_range, self.start_xy_range))
-            y0 = float(rng.uniform(-self.start_xy_range, self.start_xy_range))
-            z0 = float(rng.uniform(self.start_z_min, self.start_z_max))
-        else:
-           
-            x0, y0, z0 = 0.0, 0.0, 0.1
-
-        # Don’t spawn below ground or above hard ceiling
-        z0 = float(np.clip(z0, 0.01, self.hard_ceiling - 0.05))
-
-        # Remember where we spawned, so landing logic can use radius from here
-        self.spawn_xy[0] = x0
-        self.spawn_xy[1] = y0
-
-        if self.random_start:
-            rng = getattr(self, "np_random", np.random)
-
-            x0 = float(rng.uniform(-self.start_xy_range, self.start_xy_range))
-            y0 = float(rng.uniform(-self.start_xy_range, self.start_xy_range))
-            z0 = float(rng.uniform(self.start_z_min, self.start_z_max))
-            z0 = float(np.clip(z0, 0.01, self.hard_ceiling - 0.05))
-        else:
-            # deterministic ground start for evaluation
-            x0, y0, z0 = 0.3, 0.0, 0.01
-
-        self.data.qpos[:] = np.array([x0, y0, z0, 1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.data.qpos[:] = np.array([0, 0, 0.01, 1, 0, 0, 0], dtype=np.float64)##reset qpos to 0,0,0.01 as starting pos
         self.data.qvel[:] = 0.0
-        self.data.ctrl[:] = 0.0
-        self.u_cmd = self.HOVER_THRUST
-        self.last_du = 0.0
+        self.data.ctrl[:] = 0.0#Reset thrust to 0
+        self.u_cmd = self.HOVER_THRUST##reset the filtered thrust back to base hover_thrust
+        self.last_du = 0.0##reset the last thrust to 0
+        ##reset the hover counter back to 0 for the start of a new episode
         self.hover_count = 0
-
      
 
         self.du_hist.clear()##clear history of thrusts
@@ -703,7 +673,14 @@ class CrazyFlieEnv(gym.Env):
 
         if z > self.hard_ceiling:
             reward -= 50.0
-            return obs, reward, True, False, {"ceiling": True}
+            if self.auto_landing:
+                        # Start landing instead of terminating
+                        self._start_landing_phase("hard-ceiling")
+                        
+                        return obs, reward, False, False, {"ceiling": True}
+            else:
+                    return obs, reward, True, False, info
+          
 
         r_xy_pos = np.sqrt(x**2 + y**2)
         if r_xy_pos > 0.8:
@@ -719,13 +696,16 @@ class CrazyFlieEnv(gym.Env):
                 "timeout": True,
             }
             if self.auto_landing:
+                # Start landing instead of truncating
                 self._start_landing_phase("timeout")
                 info.update({"phase": "landing_start"})
                 return obs, reward, False, False, info
             else:
                 truncated = True
                 return obs, reward, terminated, truncated, info
- 
+        
+
+        # Normal non-timeout return
         truncated = False
         return obs, reward, terminated, truncated, {"hover_steps": self.hover_count}
 
@@ -750,15 +730,21 @@ class CrazyFlieEnv(gym.Env):
         single = self._get_single_obs()
 
         if self.n_stack == 1:
-          
+            # No stacking, just return the current frame
             return single
+
+        # Initialize the stack on first call (e.g., right after reset)
         if len(self.obs_stack) == 0:
             for _ in range(self.n_stack):
                 self.obs_stack.append(single.copy())
         else:
             self.obs_stack.append(single.copy())
+
         stacked = np.concatenate(list(self.obs_stack), axis=0).astype(np.float32)
         return stacked
+# ========== Landing helpers for external controller ==========
+
+      # ========== Landing helpers for external controller ==========
 
     def get_altitude(self) -> float:
         """Current z in world coordinates."""
@@ -779,13 +765,17 @@ class CrazyFlieEnv(gym.Env):
         - Try to follow a gentle desired descent speed v_des(z).
         - Keep thrust bounded away from 0 so we don't free-fall.
         """
+        # --- Read state we care about ---
         z  = float(self.data.qpos[2])
         vz = float(self.data.qvel[2])
 
+        # Height above "ground"
         h = z - self.safe_ground_height()
         if h < 0.0:
             h = 0.0
 
+        # Piecewise desired vertical speed [m/s]
+        # Higher up: a bit faster; near ground: very gentle
         if h > 0.6:
             v_des = -0.30
         elif h > 0.3:
@@ -794,24 +784,37 @@ class CrazyFlieEnv(gym.Env):
             v_des = -0.15
         else:
             v_des = -0.08
+
+        # Vertical speed control: track v_des
+        # If vz is more negative than v_des (falling too fast),
+        #   err_v = vz - v_des < 0 -> u increases -> slows descent.
+        # If vz is too small / positive (not descending enough),
+        #   err_v > 0 -> u decreases -> speeds descent.
         k_v = 0.4
         err_v = vz - v_des
         u = self.HOVER_THRUST - k_v * err_v
 
-        ### don't let landing thrust get *too* small or we'll free-fall.
-        #### This is a "floor" on thrust during landing.
-        u_min = 0.12                        
+        # Don't let landing thrust get *too* small or we'll free-fall.
+        # This is a "floor" on thrust during landing.
+        u_min = 0.12                        # tune if needed
         u_max = self.action_space.high[0]
         u = float(np.clip(u, u_min, u_max))
-        ### Torques OFF during landing: we rely on the last policy state
-        ## to already be upright and let dynamics keep it near there.
+
+        # Torques OFF during landing: we rely on the last policy state
+        # to already be upright and let dynamics keep it near there.
         return np.array([u, 0.0, 0.0, 0.0], dtype=np.float32)
+
 
 
     def cut_motors(self) -> None:
         """Immediately zero all actuators."""
         self.u_cmd = 0.0
         self.data.ctrl[:] = 0.0
+        # ========== Noise control for scripted landing ==========
+
+        # ───────────────────────────────────
+    # Noise control for scripted landing
+    # ───────────────────────────────────
 
 
     def _start_landing_phase(self, reason: str):
@@ -852,27 +855,18 @@ class CrazyFlieEnv(gym.Env):
 
     def _tilt_and_radius(self):
         """
-        Compute:
-          - tilt angle (rad) from quaternion (roll/pitch),
-          - lateral radius *relative to the spawn point* in the x-y plane.
-        This makes landing and rewards depend on how far we drift from takeoff,
-        not from the global origin.
+        Compute tilt angle (rad) from quaternion (roll/pitch only)
+        and lateral distance r from origin in the x-y plane.
         """
         x, y, z = self.data.qpos[0:3]
         qw, qx, qy, qz = self.data.qpos[3:7]
 
-        # Tilt from roll/pitch
         tilt_sin = np.sqrt(qx * qx + qy * qy)
         tilt_sin = np.clip(tilt_sin, 0.0, 1.0)
-        tilt_angle = 2.0 * np.arcsin(tilt_sin)
+        tilt_angle = 2.0 * np.arcsin(tilt_sin)  # radians
 
-        # Radius from spawn point, not from world origin
-        x_rel = x - float(self.spawn_xy[0])
-        y_rel = y - float(self.spawn_xy[1])
-        r = float(np.sqrt(x_rel * x_rel + y_rel * y_rel))
-
+        r = float(np.sqrt(x * x + y * y))
         return tilt_angle, r
-
     
     def _step_landing(self, action: np.ndarray):
         """
@@ -884,36 +878,56 @@ class CrazyFlieEnv(gym.Env):
 
         Returns: obs, reward, terminated, truncated, info
         """
+
+        # Convert external action -> a_pol
         a_pol = np.asarray(action, dtype=np.float32).squeeze()
         if a_pol.shape != (4,):
             raise ValueError("Landing expects 4D action [thrust, mx, my, mz].")
+
+        # Policy thrust and torques
         u_pol = float(np.clip(
             a_pol[0],
             self.action_space.low[0],
             self.action_space.high[0],
         ))
         m_pol = a_pol[1:4]
+        # Clip torques to [-1,1] as usual
         m_pol = np.clip(m_pol, -1.0, 1.0)
+
+        # Clean state from MuJoCo
         x, y, z = self.data.qpos[0:3]
         vx, vy, vz = self.data.qvel[0:3]
 
         tilt_angle, r = self._tilt_and_radius()
         tilt_deg = float(np.rad2deg(tilt_angle))
+
+        # Initialize landing state on first step
         if self.landing_step_idx == 0:
             self.landing_beta = 0.0
             self.landing_mode = "DESCEND"
             self.landing_catch_steps = 0
 
         mode = self.landing_mode
+
+        # ───────────── 1) Mode switch: go to CATCH if things get bad ─────────────
         if (tilt_deg > self.landing_tilt_abort_deg
                 or r > self.landing_max_radius):
             mode = "CATCH"
             self.landing_mode = "CATCH"
             self.landing_catch_steps = 0
+
+        # ───────────── 2) Decide desired vertical speed and beta ─────────────
+        # Default: no descent unless set below
         v_des = 0.0
+
         if mode == "CATCH":
+            # In catch mode: try to hover / hold altitude,
+            # and temporarily give more authority back to the policy (beta→0).
             v_des = 0.0
             self.landing_beta = max(0.0, self.landing_beta - 0.05)
+
+            # Once we're upright, inside safe radius, and slow laterally,
+            # count some "safe" steps; then return to DESCEND mode.
             if (tilt_deg < self.landing_tilt_ok_deg
                     and r < self.landing_safe_radius
                     and abs(vx) < 0.2 and abs(vy) < 0.2):
@@ -924,10 +938,13 @@ class CrazyFlieEnv(gym.Env):
             if self.landing_catch_steps > 50:
                 self.landing_mode = "DESCEND"
 
-        else:  
+        else:  # DESCEND
+            # Height above ground
             h = z - self.safe_ground_height()
             if h < 0.0:
                 h = 0.0
+
+            # Piecewise vertical speed profile (same as external logic)
             if h > 0.8:
                 v_des = self.landing_vz_fast
             elif h > 0.4:
@@ -936,30 +953,44 @@ class CrazyFlieEnv(gym.Env):
                 v_des = self.landing_vz_mid
             else:
                 v_des = self.landing_vz_slow
+
+            # Ramp beta from 0→1 over landing_beta_ramp_steps
             step_idx = self.landing_step_idx
             self.landing_beta = min(
                 1.0,
                 step_idx / max(1, self.landing_beta_ramp_steps)
             )
-        
+
         beta = self.landing_beta
-        err_v = vz - v_des     
+
+        # ───────────── 3) Compute landing thrust u_land ─────────────
+        # PD on vertical speed: want vz ≈ v_des
+        err_v = vz - v_des      # <0 if falling faster than desired
         u_land = self.HOVER_THRUST - self.landing_k_vz * err_v
+
+        # Clamp landing thrust to avoid free-fall
         u_min = 0.12
         u_max = float(self.action_space.high[0])
         u_land = float(np.clip(u_land, u_min, u_max))
+
+        # ───────────── 4) Blend thrust: u = (1-beta)*u_pol + beta*u_land ─────────────
         u = (1.0 - beta) * u_pol + beta * u_land
         u = float(np.clip(u, u_min, u_max))
+
         # Apply thrust smoothing & torques using existing machinery
         self._apply_thrust(u, m_pol)
+
+        # Step physics
         for _ in range(self.frame_skip):
             mj.mj_step(self.model, self.data)
         self.step_idx += 1
         self.landing_step_idx += 1
+
+        # Observation for caller (use same noisy pipeline for consistency)
         single_clean = self._get_single_obs()
         single = self._apply_obs_noise(single_clean)
 
-        if self.n_stack == 1: #for frame stacking
+        if self.n_stack == 1:
             obs = single
         else:
             if len(self.obs_stack) == 0:
@@ -1003,7 +1034,3 @@ class CrazyFlieEnv(gym.Env):
     
 
 
-
-    
-
-    

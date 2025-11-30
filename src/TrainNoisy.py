@@ -27,12 +27,12 @@ if __name__ == "__main__":
 
     DR_PARAMS = dict(
    
-    obs_noise_std=0.03,      # base scale for white noise
-    obs_bias_std=0.02,       # episode-level offsets
-    action_noise_std=0.01,   # very small jitter
-    motor_scale_std=0.03,    # ±3% gain
+    obs_noise_std=0.05,      # base scale for white noise
+    obs_bias_std=0.05,       # episode-level offsets
+    action_noise_std=0.05,   # very small jitter
+    motor_scale_std=0.05,    # ±3% gain
     frame_skip=10,
-    frame_skip_jitter=1,     # [9, 11]
+    frame_skip_jitter=4,     # [9, 11]
 
 
     )
@@ -42,13 +42,13 @@ if __name__ == "__main__":
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
 
   ###loading pre-trained model from TrainComplex.py 
-    base_models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexMain"))
-    old_model_path = os.path.join(base_models_dir, "complex.zip")
-    old_vecnorm_path = os.path.join(base_models_dir, "vecnormalize.pkl")
+    base_models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexRandom_DR2"))
+    old_model_path = os.path.join(base_models_dir, "complex_dr.zip")
+    old_vecnorm_path = os.path.join(base_models_dir, "vecnormalize_dr.pkl")
 
   ##where we save our new model with domain randomization
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexMain_DR"))
-    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplexMain_DR"))
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexRandom_DR3"))
+    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplexRandom_DR3"))
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
@@ -71,11 +71,11 @@ if __name__ == "__main__":
     model = PPO.load(old_model_path, env=venv)
 
     
-    model.learning_rate = 5e-4  
+    model.learning_rate = 10e-4  
 
     # ---------- 7) Continue training with noise ----------
     model.learn(
-        total_timesteps=4_000_000,   # extra steps for fine-tuning
+        total_timesteps=5_000_000,   # extra steps for fine-tuning
         progress_bar=True,
         reset_num_timesteps=False,   
     )

@@ -68,7 +68,7 @@ if __name__ == "__main__":
     here = os.path.dirname(__file__)
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##path to models and the specific model zip file
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2_DR"))
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexRandom_DR3"))
     model_path = os.path.join(models_dir, "complex_dr.zip")
     norm_path  = os.path.join(models_dir, "vecnormalize_dr.pkl")
 
@@ -91,13 +91,21 @@ if __name__ == "__main__":
         max_steps=MAX_STEPS,
         n_stack=4,
         hover_required_steps=600,
-        # Evaluation: no extra noise (or use milder values)
-        obs_noise_std=0.05,
-        obs_bias_std=0.05,
-        action_noise_std=0.05,
-        motor_scale_std=0.05,  # ±2% thrust gain
-        frame_skip=10,
-        frame_skip_jitter=2,  
+        
+     
+    obs_noise_std=0.05,      # base scale for white noise
+    obs_bias_std=0.05,       # episode-level offsets
+    action_noise_std=0.05,   # very small jitter
+    motor_scale_std=0.05,    # ±5% gain
+    frame_skip=10,
+    frame_skip_jitter=5,     # [5,15]
+
+        auto_landing=True,
+             start_xy_range=0.30,
+        start_z_min=0.01,
+        start_z_max=1.1,    # stronger rate damping
+         random_start=False,   
+       
     )
 ## we don't wrap it with dummyVecEnv because mujocco only works with a single env
     obs_raw, _ = env.reset()
@@ -141,7 +149,6 @@ if __name__ == "__main__":
             # Logging values from *raw* obs
             x, y, z = float(obs_raw[0]), float(obs_raw[1]), float(obs_raw[2])
             vx, vy, vz = float(obs_raw[7]), float(obs_raw[8]), float(obs_raw[9])
-
 
             # Update viewer
             viewer.sync()

@@ -32,12 +32,16 @@ def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank: int = 
 if __name__ == "__main__":
     # Domain randomization settings used for TRAINING
     DR_PARAMS = dict(
-        obs_noise_std=0.0,
-        obs_bias_std=0.0,
+        obs_noise_std=0.5,
+        obs_bias_std=0.5,
         action_noise_std=0.0,
         motor_scale_std=0.0,  # ±5% thrust gain
         frame_skip=10,
         frame_skip_jitter=0,   # frame skip in [8, 12]
+          start_xy_range=0.6,
+        # vertical: between 0.15 m and 1.1 m (assuming TARGET_Z = 1.0)
+        start_z_min=0.01,
+        start_z_max=1.10,
     )
     here = os.path.dirname(__file__)
 
@@ -45,9 +49,9 @@ if __name__ == "__main__":
     ##xml path for the crazyflydrone
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##directory to save the models from training
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexMain"))
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexRandomized"))
     ##where to save the logging for tensorboard
-    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplexMain"))
+    logs_dir = os.path.abspath(os.path.join(here, "..", "logsComplexRandomized"))
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
