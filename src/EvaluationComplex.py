@@ -68,7 +68,7 @@ if __name__ == "__main__":
     here = os.path.dirname(__file__)
     xml_path = os.path.abspath(os.path.join(here, "..", "Assets", "bitcraze_crazyflie_2", "scene.xml"))
     ##path to models and the specific model zip file
-    models_dir = os.path.abspath(os.path.join(here, "..", "models", "Complex2_DR"))
+    models_dir = os.path.abspath(os.path.join(here, "..", "models", "ComplexMain_DR"))
     model_path = os.path.join(models_dir, "complex_dr.zip")
     norm_path  = os.path.join(models_dir, "vecnormalize_dr.pkl")
 
