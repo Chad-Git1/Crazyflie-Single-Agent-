@@ -4,7 +4,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from CrazyFlieEnvComplex import CrazyFlieEnv
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from src.CrazyFlieEnvComplex import CrazyFlieEnv
 
 def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank: int = 0):
     def _f():

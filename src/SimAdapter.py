@@ -6,75 +6,48 @@ from typing import Optional
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
-from CrazyFlieEnvComplex import CrazyFlieEnv
-from FlightDataLogger import FlightDataLogger
+from src.CrazyFlieEnvComplex import CrazyFlieEnv
+from src.FlightDataLogger import FlightDataLogger
+from src.CrazyflieFirmware import CrazyflieFirmware
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class SimAdapter:
-    """Run trained policy inside CrazyFlieEnvComplex and log telemetry.
+    """Run trained policy inside CrazyFlieEnvComplex using the CrazyflieFirmware class.
 
-    This adapter uses the exact environment used for training so the
-    observation/action formats match. It normalizes observations using
-    the saved `VecNormalize` statistics and runs the PPO policy.
+    This adapter validates that the Firmware class (intended for hardware)
+    performs correctly within the simulation environment.
     """
 
     def __init__(self, model_path: str, norm_path: str, xml_path: str, target_z: float = 1.0, max_steps: int = 1500):
-        self.model_path = model_path
-        self.norm_path = norm_path
         self.xml_path = xml_path
         self.target_z = target_z
         self.max_steps = max_steps
 
-        # Load model (fall back to a safe dummy policy if file missing)
-        if model_path and os.path.exists(model_path):
-            logger.info(f"Loading model from {model_path}")
-            try:
-                self.model = PPO.load(model_path)
-            except Exception as e:
-                logger.warning(f"Failed to load PPO model ({e}), using dummy policy")
-                self.model = None
-        else:
-            logger.warning(f"Model file not found at {model_path}, using dummy policy")
-            self.model = None
-
-        # Load VecNormalize if available; otherwise use identity normalizer
+        # Initialize the Firmware controller
+        # We pass None for vec_env because we might not have the exact training env structure here
+        # but CrazyflieFirmware handles loading VecNormalize without it if needed (or we can pass a dummy).
+        # For best results with VecNormalize, we usually need a dummy env to unpickle it.
+        
         def _thunk():
-            return Monitor(CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps, hover_required_steps=600))
+             return Monitor(CrazyFlieEnv(xml_path=xml_path, target_z=target_z, max_steps=max_steps, hover_required_steps=600))
+        dummy_env = DummyVecEnv([_thunk])
 
-        self.vec_env = DummyVecEnv([_thunk])
-        if norm_path and os.path.exists(norm_path):
-            try:
-                logger.info(f"Loading VecNormalize from {norm_path}")
-                self.vecnorm = VecNormalize.load(norm_path, self.vec_env)
-                self.vecnorm.training = False
-                self.vecnorm.norm_reward = False
-            except Exception as e:
-                logger.warning(f"Failed to load VecNormalize ({e}), using identity normalizer")
-                self.vecnorm = None
-        else:
-            logger.warning(f"VecNormalize file not found at {norm_path}, using identity normalizer")
-            self.vecnorm = None
-
-        # Dummy policy fallback: hover thrust + zero moments
-        class _DummyPolicy:
-            def predict(self, obs, deterministic=True):
-                # obs shape: (1, obs_dim) or (obs_dim,)
-                # return action shaped (1,4)
-                # HOVER thrust: use Conservative 0.27
-                return np.array([[0.27, 0.0, 0.0, 0.0]], dtype=np.float32), None
-
-        if self.model is None:
-            self.model = _DummyPolicy()
-
+        self.firmware = CrazyflieFirmware(
+            model_path=model_path,
+            norm_path=norm_path,
+            vec_env=dummy_env,
+            hover_thrust=0.27
+        )
+        
     def run_episode(self, render: bool = False, log_id: str = "sim_001"):
         # Create a fresh single env for rendering and stepping
         env = CrazyFlieEnv(xml_path=self.xml_path, target_z=self.target_z, max_steps=self.max_steps, n_stack=4, hover_required_steps=600)
         obs_raw, _ = env.reset()
 
-        logger.info("Starting simulation episode")
+        logger.info("Starting simulation episode with CrazyflieFirmware")
         dt_sim = env.model.opt.timestep
         dt_step = dt_sim * env.frame_skip
 
@@ -87,11 +60,9 @@ class SimAdapter:
 
         t0 = time.time()
         while not (terminated or truncated) and step < self.max_steps:
-            # Normalize observation for policy
-            obs_norm = self.vecnorm.normalize_obs(obs_raw[None, :])  # shape (1, obs_dim)
-
-            action, _ = self.model.predict(obs_norm, deterministic=True)
-            action = np.asarray(action, dtype=np.float32).squeeze()
+            # Use the Firmware to predict action
+            # The firmware handles normalization, clamping, and safety checks internally
+            action = self.firmware.predict_action(obs_raw)
 
             # Step environment
             obs_raw, reward, terminated, truncated, info = env.step(action)

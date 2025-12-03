@@ -13,7 +13,7 @@ def main():
     # Load the model
     model = mujoco.MjModel.from_xml_path(path)
     data = mujoco.MjData(model)
-
+ 
     print(data.qpos[0:])
 
     # Launch viewer

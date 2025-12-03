@@ -54,7 +54,9 @@ from stable_baselines3.common.monitor import Monitor
 ##add safety controls for certain pitch/rolls to catch issues or if it goes past a certain point
 ##work on actual environment
 
-from CrazyFlieEnvComplex import CrazyFlieEnv
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from src.CrazyFlieEnvComplex import CrazyFlieEnv
 
 
 # Build a tiny vec env only to load VecNormalize stats

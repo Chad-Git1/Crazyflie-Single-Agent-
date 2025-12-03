@@ -8,7 +8,9 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 ##since SB3 expects vectorized enviornments
 ## VecNormalize normalizes the environment
 
-from CrazyFlieEnvComplex import CrazyFlieEnv
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from src.CrazyFlieEnvComplex import CrazyFlieEnv
 
 ##factory function, a function that returns another function
 def make_env(xml_path: str, target_z: float, max_steps: int = 1500, rank: int = 0):

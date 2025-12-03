@@ -12,7 +12,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from CrazyFlieEnvComplex import CrazyFlieEnv
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from src.CrazyFlieEnvComplex import CrazyFlieEnv
 
 
 # ---------- CLEAN ENV: domain randomization OFF FOR TUNING ----------
