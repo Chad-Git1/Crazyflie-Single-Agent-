@@ -31,8 +31,8 @@ Here are the steps we will be undertaking:
 
 Citations :
 @software{menagerie2022github,
-  author = {Zakka, Kevin and Tassa, Yuval and {MuJoCo Menagerie Contributors}},
-  title = {{MuJoCo Menagerie: A collection of high-quality simulation models for MuJoCo}},
-  url = {http://github.com/google-deepmind/mujoco_menagerie},
+  author = {Zakka, Kevin and Tassa, Yuval and Bitcraze},
+  title = {mujoco_menagerie/bitcraze_crazyflie_2},
+  url = {http://github.com/google-deepmind/mujoco_menagerie/tree/main/bitcraze_crazyflie_2},
   year = {2022},
 }
