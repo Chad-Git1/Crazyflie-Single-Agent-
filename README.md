@@ -27,3 +27,12 @@ Here are the steps we will be undertaking:
 6 - Sim2Real Bridge Phase
 
 7 - Test flight with Crazyflie drone in CBY basement lab
+
+
+Citations :
+@software{menagerie2022github,
+  author = {Zakka, Kevin and Tassa, Yuval and {MuJoCo Menagerie Contributors}},
+  title = {{MuJoCo Menagerie: A collection of high-quality simulation models for MuJoCo}},
+  url = {http://github.com/google-deepmind/mujoco_menagerie},
+  year = {2022},
+}
